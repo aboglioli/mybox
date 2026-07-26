@@ -31,6 +31,17 @@ uid="${MYBOX_UID:-1000}"
 gid="${MYBOX_GID:-1000}"
 shell="${MYBOX_SHELL:-/usr/bin/fish}"
 
+# SSH keys from env — comma- or newline-separated. Synced every boot to
+# /etc/ssh/authorized_keys.d/<name> (sshd reads it alongside
+# ~/.ssh/authorized_keys), so env is the source of truth for that file
+# while the user's own ~/.ssh stays untouched. When unset the file is
+# left alone — bind-mount it instead for local setups.
+if [ -n "${MYBOX_AUTHORIZED_KEYS:-}" ]; then
+    install -d -m 0755 /etc/ssh/authorized_keys.d
+    printf '%s\n' "${MYBOX_AUTHORIZED_KEYS//,/$'\n'}" > "/etc/ssh/authorized_keys.d/$name"
+    chmod 0644 "/etc/ssh/authorized_keys.d/$name"
+fi
+
 # Per-user service-data dir (nested quadlets keep volumes under
 # /srv/users/<uid>, e.g. Volume=/srv/users/%U/...). Runs every boot,
 # BEFORE the user-exists guard — /srv may be a fresh bind even when

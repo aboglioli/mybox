@@ -1,0 +1,514 @@
+# ====================================================================
+# incus.yaml — Incus preseed (profiles) for MyOS / Fedora-bootc hosts
+# ====================================================================
+#
+# PRIMARY daily-driver runtime for mybox. systemd-nspawn
+# (mybox/mybox.nspawn) is kept as the secondary / no-daemon fallback;
+# both share the same image, socket paths, and UID model.
+#
+# Why incus is primary (vs raw LXC, which was removed):
+#   * VFS idmapped mounts (`shift=true`) are done by the incus DAEMON as
+#     real root — so host compositor sockets, GPU nodes, and state dirs
+#     idmap cleanly with NO per-socket hook (raw lxc-start could not:
+#     its mount step runs as the container's mapped root and can't reach
+#     the host's 0700 /run/user/1000).
+#   * Flatpak / bubblewrap and nested crun/podman "just work" with
+#     `security.nesting=true` — liblxc masks /proc via lxcfs + LSM
+#     denials instead of tmpfs over-mounts, so there is NO locked
+#     over-mount to block bwrap's nested procfs (no proc-unmask dance).
+#   * lxcfs gives container-aware /proc + /sys (free / nproc / top see
+#     the container's cgroup limits, not the host's).
+#
+# Apply once: `incus admin init --preseed < incus.yaml`
+# Launch:     `incus launch images:archlinux mybox -p default -p tun -p fuse -p gui -p gpu -p nvidia`
+#
+# Custom mybox image instead of images:archlinux — import the rootfs the
+# Containerfile builds (see mybox/justfile `rootfs`/`oci-tarball`):
+#   cd ~/mybox && just rootfs build_out/rootfs
+#   tar -C build_out/rootfs -caf rootfs.tar.zst .
+#   incus image import rootfs.tar.zst --alias mybox     # (+ metadata.yaml)
+# or pull the OCI image directly (runs as an APPLICATION container, not a
+# full systemd system container — prefer the rootfs import for a daily OS).
+#
+# Profile cheat-sheet (compose with `default` unless noted):
+#
+#   gui              GUI client of host compositor: Wayland + PipeWire/
+#                    Pulse + session DBus. X11 = in-container Xwayland
+#                    (host :0 is unreachable — see the profile's X11 note).
+#   gpu              DRI + /dev/input (Intel/AMD)
+#   nvidia           raw NVIDIA device passthrough + mybox install-nvidia
+#   tun              /dev/net/tun (rootless podman pasta, WireGuard, VMs)
+#   fuse             /dev/fuse (fuse-overlayfs / rootless podman, sshfs)
+#   macvlan / bridge own LAN IP (macvlan on the NIC / existing host br0)
+#   shared-folder    Host /mnt/shared → container /mnt/shared
+#   virt             KVM + libvirt + QEMU inside
+#   state-binds      writable /etc /var /home /srv host binds over the image root
+#   desktop          Run a compositor INSIDE (rare; host text-mode)
+#   privileged       Container UID 0 == host UID 0 (DON'T)
+#
+# In-container prerequisites after launch:
+#   * ENTER via a login (`incus exec -t <c> -- login -f <user>` or ssh),
+#     NOT `incus console` — console gives TERM=vt220 (nvim shows `$<2>`)
+#     and no window-size tracking, and only a login opens the PAM session
+#     that creates /run/user/1000 + XDG_RUNTIME_DIR (needed for GUI/audio).
+#   * Flatpak — nothing for `--user` installs (no polkit). SYSTEM installs
+#     need the wheel polkit rule (baked into mybox; see the gui profile's
+#     Flatpak note) because a container login is inactive+remote.
+#   * Rootless podman: compose `-p tun -p fuse` (pasta tap + fuse-
+#     overlayfs). subuid/subgid + newuidmap caps are baked into the mybox
+#     image. On a vanilla images:archlinux container, add them by hand:
+#       sudo setcap cap_setuid+ep /usr/bin/newuidmap
+#       sudo setcap cap_setgid+ep /usr/bin/newgidmap
+#       echo '<user>:100000:65536' | sudo tee -a /etc/subuid /etc/subgid
+#   * Rootful podman: works under security.nesting; cgroup2 is delegated
+#     to the container's systemd automatically.
+#   * NVIDIA: `mybox install-nvidia` (matches host driver version; also
+#     installs mesa + libdrm, required for GL/Vulkan on Wayland).
+#   * GUI: see the `gui` profile header for Wayland (works), X11 (run
+#     xwayland-satellite inside), and audio (use the Pulse socket; mask
+#     any nested pipewire). On vanilla arch also `pacman -S mesa libdrm`.
+#
+# UID layout (matches myosi's mkosi.extra/etc/subuid + subgid):
+#   Host declares  root:1500000:200000  — incusd runs as root and carves
+#   container UID windows from root's pool (1500000..1699999). With
+#   security.idmap.size=200000 that is one full window:
+#       container UID 0    → host 1500000
+#       container UID 1000 → host 1501000   (operator; NOT the host
+#                            desktop user — GUI/state sharing is per-mount
+#                            shift=true, never raw.idmap)
+#   security.idmap.isolated is OFF by default, so multiple containers
+#   SHARE that base (all map to the same host UIDs) and still fit the
+#   200000 pool. For per-container UID isolation instead, enlarge root's
+#   pool (e.g. root:1500000:1000000) and set security.idmap.isolated=true.
+#   nspawn uses a DISJOINT base (1100000:200000) so both coexist.
+#   myosi already ships this subuid/subgid — no host change needed.
+#
+# Non-portable values (override with `incus profile edit <p>` or
+# `incus config device override <c> <dev> key=val`):
+#
+#   Profile          Field                          Scope
+#   ──────────────   ─────────────────────────────  ────────
+#   macvlan          eth0.parent (enp1s0)         host
+#   bridge           eth0.parent (br0)              host
+#   gui              env WAYLAND_DISPLAY            host (niri/sway=1, GNOME/KDE=0)
+#                    wayland_socket.source         user (/run/user/1000/…)
+#   state-binds      device sources (/srv/machines/mybox/*)   instance
+#   shared-folder    shared.source (/mnt/shared)   host
+# ====================================================================
+
+config: {}
+
+networks:
+  - name: incusbr0
+    type: bridge
+    config:
+      ipv4.address: auto
+      ipv4.nat: "true"
+      ipv6.address: auto
+      ipv6.nat: "true"
+
+storage_pools:
+  - name: default
+    driver: btrfs
+    config:
+      source: /var/lib/incus/storage-pools/default
+
+profiles:
+
+  # Base profile — the incus-recommended minimum, matching what
+  # `incus admin init` generates: a managed-bridge NIC (eth0 → incusbr0,
+  # NAT + DHCP/DNS/IPv6-RA via incus's own dnsmasq) and a root disk from
+  # the default pool, plus the two mybox-wide knobs (userns nesting for
+  # flatpak/podman + a 200000-UID window).
+  #
+  # Keep default MINIMAL — incus applies it to EVERY instance. Everything
+  # else is a separate profile you compose in:
+  #   incus launch mybox mybox -p default -p tun -p fuse -p gui -p gpu -p nvidia
+  #
+  # Expose a port to the host:
+  #   incus config device add <c> myport proxy \
+  #       listen=tcp:0.0.0.0:8080 connect=tcp:127.0.0.1:8080
+  #
+  # Hardening: incus already applies a per-container AppArmor profile (or
+  # SELinux container_t), a seccomp filter, the userns UID shift, and a
+  # cgroup device allowlist by default — so the explicit cap drops /
+  # seccomp profile the old raw-LXC config carried are redundant here. To
+  # bound RAM / fork bombs, uncomment limits below (tune per host).
+  - name: default
+    description: Base — incusbr0 NIC + btrfs root + nesting + idmap
+    config:
+      security.nesting: "true"
+      # 200000-UID window. Default 65536 is too small — the in-container
+      # /etc/subuid bakes operator:100000:65536 for nested rootless
+      # podman, so the window must reach ≥165536. Honored by the host's
+      # root:1500000:200000 pool (exactly one window; isolated=false by
+      # default lets multiple containers share it — see UID layout above).
+      security.idmap.size: "200000"
+      # limits.memory: 24GiB        # hard cap (OOM inside at this point)
+      # limits.memory.enforce: hard
+      # limits.processes: "8192"    # fork-bomb cap
+    devices:
+      # eth0 → incusbr0: incus's managed NAT bridge (dnsmasq DHCP / DNS /
+      # IPv6-RA). The `network:` form is the modern, recommended way to
+      # attach a managed network (vs a raw `nictype: bridged` + parent).
+      # For an own LAN IP instead, compose -p macvlan or -p bridge (each
+      # redefines eth0, overriding this one).
+      eth0:
+        name: eth0
+        network: incusbr0
+        type: nic
+      root:
+        path: /
+        pool: default
+        type: disk
+      # mybox CLI + recipes are BAKED into the image (Containerfile
+      # COPY system/usr → /usr). For a vanilla images:archlinux
+      # container, uncomment to bind them from the repo:
+      # mybox_bin:
+      #   type: disk
+      #   source: /path/to/mybox/system/usr/local/bin/mybox
+      #   path: /usr/local/bin/mybox
+      # mybox_just:
+      #   type: disk
+      #   source: /path/to/mybox/system/usr/share/mybox/just
+      #   path: /usr/share/mybox/just
+      #   readonly: "true"
+
+  # /dev/net/tun — its own profile so it composes independently. Needed
+  # by: pasta (rootless podman's default network — a tap per container),
+  # WireGuard / Tailscale / OpenVPN, and libvirt tap-mode VMs (compose
+  # with `-p virt`). incus does not provide it by default.
+  - name: tun
+    description: /dev/net/tun (rootless podman pasta, WireGuard, VM taps)
+    devices:
+      tun:
+        type: unix-char
+        source: /dev/net/tun
+        path: /dev/net/tun
+
+  # /dev/fuse — its own profile so it composes independently. Needed by
+  # fuse-overlayfs (the storage driver nested rootless podman falls back
+  # to when it can't use native kernel overlayfs in its userns) and any
+  # FUSE filesystem (sshfs, rclone, ...). incus does not provide it.
+  - name: fuse
+    description: /dev/fuse (fuse-overlayfs / rootless podman, sshfs, ...)
+    devices:
+      fuse:
+        type: unix-char
+        source: /dev/fuse
+        path: /dev/fuse
+
+  # macvlan — container gets its own DHCP IP and appears as an
+  # independent machine on the LAN; host CANNOT reach the container.
+  # Doesn't work if the parent iface is already in a bridge → use the
+  # `bridge` profile. parent: `ip -o route get 1.1.1.1 | awk '{print $5}'`.
+  - name: macvlan
+    description: LAN via macvlan (own IP, host can't reach it)
+    devices:
+      eth0:
+        name: eth0
+        nictype: macvlan
+        parent: enp1s0
+        type: nic
+
+  # bridge — for hosts that have their OWN L2 bridge (e.g. br0 shared
+  # with libvirt VMs). The container joins it → own LAN IP AND the host
+  # can reach it. This is SEPARATE from incus's managed incusbr0 (the
+  # default profile's NAT bridge); use it only on hosts where br0 exists.
+  # parent: `ip link show type bridge`.
+  - name: bridge
+    description: LAN via existing host bridge br0 (own IP, host-reachable)
+    devices:
+      eth0:
+        name: eth0
+        nictype: bridged
+        parent: br0
+        type: nic
+
+  # Host Wayland / PipeWire / Pulse / DBus sockets at /mnt/host/*.
+  #
+  # /mnt/host (NOT /run/user/1000): logind re-creates /run/user/1000 as a
+  # fresh tmpfs when the operator logs in, SHADOWING any bind placed under
+  # it (the same failure mode that makes the X11 bind useless — see
+  # below). /mnt is never reset, so binds there survive login.
+  #
+  # `shift: "true"` is a VFS idmapped mount: the on-disk owner (host uid
+  # 1000) maps to the operator (container uid 1000) for that mount ONLY —
+  # no on-disk chown, userns untouched. The incus daemon creates it as
+  # real root, so it reaches the compositor's 0700 /run/user/1000 (the
+  # exact thing raw lxc-start could not do). Requires kernel ≥ 6.3 for
+  # tmpfs idmap. NOT raw.idmap — that would collapse the uid boundary.
+  #
+  # ENTER VIA A LOGIN — `incus exec -t mybox -- login -f <user>` or ssh —
+  # NOT `incus console`: agetty gives the console TERM=vt220, so nvim/TUIs
+  # render padding as literal `$<2>` and the console can't track window
+  # size. A login also opens a PAM session, so pam_systemd creates
+  # /run/user/1000 + exports XDG_RUNTIME_DIR; plain `incus exec` / `su` /
+  # `runuser` do NOT (they skip the PAM session). The mybox image bakes
+  # `loginctl enable-linger` so /run/user/1000 also exists without a login.
+  #
+  #   Wayland  works out of the box (proven: vkcube on the dGPU). Socket
+  #            name: niri/sway → wayland-1; GNOME/KDE → wayland-0. GL /
+  #            Vulkan on Wayland ALSO needs mesa + libdrm inside — the
+  #            NVIDIA egl-gbm/egl-wayland backends dlopen libgbm.so.1 +
+  #            libdrm.so.2 or the client SEGFAULTs creating its surface.
+  #            `mybox install-nvidia` pulls them in (see the nvidia
+  #            profile); on vanilla arch add `pacman -S mesa libdrm`.
+  #
+  #   X11      NO host-socket passthrough — deliberately dropped. niri /
+  #            xwayland-satellite keep :0 only as an ABSTRACT socket
+  #            (@/tmp/.X11-unix/X0); the filesystem socket is unlinked, and
+  #            abstract sockets are network-namespace scoped, so a
+  #            container with its own netns can never reach the host :0.
+  #            Binding /tmp/.X11-unix bound an empty dir and was shadowed
+  #            by the container's tmp.mount anyway. Instead run Xwayland
+  #            INSIDE, as a client of the host Wayland socket:
+  #              pacman -S xorg-xwayland xwayland-satellite
+  #              # as the operator IN A LOGIN SESSION (XDG_RUNTIME_DIR set):
+  #              xwayland-satellite :0 &                 # vanilla arch
+  #            → a real in-container DISPLAY=:0 (proven: xeyes/glxinfo).
+  #            (Don't use the packaged xwayland-satellite.service — it
+  #            BindsTo graphical-session.target, which never activates
+  #            here.) The mybox image bakes mybox-xwayland.service for
+  #            this; the DISPLAY env below assumes an Xwayland is running.
+  #
+  #   Audio    Use the PULSE socket (PULSE_SERVER below). On a PipeWire
+  #            host, pipewire-pulse serves the Pulse protocol and Firefox
+  #            & most apps speak Pulse (not native pipewire) for sound.
+  #            GOTCHA: if `pipewire` is installed inside, its user
+  #            pipewire.socket creates an EMPTY /run/user/1000/pipewire-0
+  #            (no wireplumber → no routing) that shadows the host and
+  #            yields silence. For a client-of-host container, mask it:
+  #              systemctl --user mask pipewire.socket pipewire.service
+  #            The native pipewire-0 bind below is only for screen-share /
+  #            camera (xdg-desktop-portal) and JACK — NOT for sound. To let
+  #            flatpak's default `--socket=pulseaudio`/`=pipewire` find the
+  #            sockets with no per-app env, symlink them to the standard
+  #            xdg paths at login (mybox bakes a user-tmpfiles.d for this):
+  #              ln -sf /mnt/host/pulse      /run/user/1000/pulse
+  #              ln -sf /mnt/host/pipewire-0 /run/user/1000/pipewire-0
+  #
+  #   DBus     bus_socket is the operator's SESSION bus (portals,
+  #            notifications). It is NOT the system bus — `systemctl
+  #            poweroff` inside goes via the container's OWN system bus
+  #            (its PID1) and cannot reach the host. NEVER bind the host
+  #            system bus (/run/dbus/system_bus_socket): a container
+  #            process could then call login1.PowerOff on the host.
+  #
+  #   Flatpak  system installs need the wheel polkit rule (baked into the
+  #            mybox image at .../polkit-1/rules.d/10-flatpak-wheel.rules):
+  #            a container login is inactive+remote, so the stock rule's
+  #            active+local fast-path never fires → password prompt that
+  #            can't complete. Simpler: `flatpak install --user` (no
+  #            polkit at all).
+  - name: gui
+    description: Host Wayland/PipeWire/Pulse/DBus at /mnt/host/* (shift=true)
+    config:
+      environment.WAYLAND_DISPLAY: /mnt/host/wayland-1
+      environment.XDG_SESSION_TYPE: wayland
+      environment.PULSE_SERVER: unix:/mnt/host/pulse/native
+      environment.DBUS_SESSION_BUS_ADDRESS: unix:path=/mnt/host/bus
+      # DISPLAY resolves ONLY once xwayland-satellite runs INSIDE (see the
+      # X11 note above). Harmless otherwise — X apps just fail to connect.
+      environment.DISPLAY: ":0"
+    devices:
+      wayland_socket:
+        type: disk
+        source: /run/user/1000/wayland-1
+        path: /mnt/host/wayland-1
+        shift: "true"
+      pipewire_socket:
+        type: disk
+        source: /run/user/1000/pipewire-0
+        path: /mnt/host/pipewire-0
+        shift: "true"
+      pulse_socket:
+        type: disk
+        source: /run/user/1000/pulse
+        path: /mnt/host/pulse
+        shift: "true"
+      bus_socket:
+        type: disk
+        source: /run/user/1000/bus
+        path: /mnt/host/bus
+        shift: "true"
+
+  # DRI + /dev/input. `type: gpu` auto-creates /dev/dri nodes inside and
+  # sets the cgroup device allow automatically. Mode bits are preserved
+  # from the host (renderD128 0666 → usable by any user inside for
+  # rendering / Vulkan / NVENC; card0 0660 → root-inside only, which only
+  # matters for a compositor INSIDE — see the desktop profile).
+  - name: gpu
+    description: DRI + /dev/input (Intel/AMD)
+    devices:
+      gpu:
+        type: gpu
+      input:
+        type: disk
+        source: /dev/input
+        path: /dev/input
+
+  # NVIDIA — RAW device passthrough + host-matched userland.
+  #
+  # We do NOT use `nvidia.runtime: true` (libnvidia-container): on driver
+  # 595.x its library injection is incomplete (misses
+  # libnvidia-wayland-client / present / ngx / vksc-core … and ships no
+  # Vulkan ICD / EGL vendor JSON), so libGLX_nvidia fails to initialise
+  # and apps fall back to the iGPU. Instead we pass the raw device nodes
+  # and install matching userland inside with `mybox install-nvidia`
+  # (reads /sys/module/nvidia/version, runs the official .run with
+  # --no-kernel-modules). Re-run after each host driver upgrade.
+  #
+  # The recipe also installs mesa + libdrm (libgbm.so.1 / libdrm.so.2:
+  # the NVIDIA egl-gbm/egl-wayland backends dlopen them to allocate a
+  # Wayland swapchain — without them a Vulkan/EGL client SEGFAULTs), and
+  # passes --no-install-libglvnd so the distro's libglvnd owns the GL/EGL
+  # dispatch libs (else the .run drops UNOWNED copies that later break
+  # `pacman -S mesa`/flatpak with "conflicting files").
+  #
+  # Passing each node as a `unix-char` device lets incus set the cgroup
+  # device allow from the node's ACTUAL major at attach time — so the
+  # dynamically-allocated /dev/nvidia-uvm major (507 on this host, varies
+  # per boot/driver) is handled automatically. (Under raw LXC we had to
+  # hardcode that major; missing it made the NVIDIA Vulkan ICD SEGFAULT
+  # in vkEnumeratePhysicalDevices and zero out every GPU.)
+  #
+  # linux.kernel_modules: incus modprobes these on the host before start
+  # — /dev/nvidia-uvm only exists after the GPU is first opened, and the
+  # container cannot load modules.
+  - name: nvidia
+    description: NVIDIA raw passthrough (+ mybox install-nvidia)
+    config:
+      linux.kernel_modules: nvidia,nvidia_uvm,nvidia_modeset,nvidia_drm
+    devices:
+      nvidia0:
+        type: unix-char
+        source: /dev/nvidia0
+        path: /dev/nvidia0
+      nvidiactl:
+        type: unix-char
+        source: /dev/nvidiactl
+        path: /dev/nvidiactl
+      nvidia-modeset:
+        type: unix-char
+        source: /dev/nvidia-modeset
+        path: /dev/nvidia-modeset
+      nvidia-uvm:
+        type: unix-char
+        source: /dev/nvidia-uvm
+        path: /dev/nvidia-uvm
+      nvidia-uvm-tools:
+        type: unix-char
+        source: /dev/nvidia-uvm-tools
+        path: /dev/nvidia-uvm-tools
+
+  # Writable state binds over an immutable image base — the incus form of
+  # the myosi root/state split.
+  #
+  # IMPORTANT: incus does NOT mount a host EROFS/squashfs as the container
+  # root (not even via /dev/loop). The root ALWAYS comes from a
+  # storage-pool volume incus creates from an imported image — a root disk
+  # (path: /) may set `pool:` but NEVER `source:` (incus rejects it; that
+  # is the "Root disk entry may not have a source property set" error).
+  # The literal RO-erofs-as-root model is an nspawn (RootImage=) feature;
+  # the incus equivalent is:
+  #   * the imported mybox image is the read-only BASE;
+  #   * each container gets a copy-on-write root in the pool (or launch
+  #     with `--ephemeral` for a root wiped on every stop = true immutable);
+  #   * to swap the base while keeping state: rebuild from a new image —
+  #       incus stop mybox && incus rebuild mybox mybox-NEW    (no snapshots)
+  #     keeps the instance config + the state binds below;
+  #   * the writable state lives OUTSIDE on host subvols, bound in below
+  #     with shift=true (real-uid ownership on disk, editable from host).
+  #     These are NON-root disks, so `source:` is allowed.
+  #
+  # Create the host subvols first, owned by REAL ids (NOT shifted):
+  #   for D in etc var home srv; do
+  #     sudo btrfs subvolume create /srv/machines/mybox/$D; done
+  #   sudo chown 0:0       /srv/machines/mybox/{etc,var,srv}   # container root
+  #   sudo chown 1000:1000 /srv/machines/mybox/home            # operator
+  # (/etc starts empty → the image's mybox-etc-seed.service repopulates it
+  # from /usr/share/factory/etc on first boot, then never overwrites it.)
+  - name: state-binds
+    description: Writable /etc /var /home /srv host binds (shift=true)
+    devices:
+      etc:
+        type: disk
+        path: /etc
+        source: /srv/machines/mybox/etc
+        shift: "true"
+      var:
+        type: disk
+        path: /var
+        source: /srv/machines/mybox/var
+        shift: "true"
+      home:
+        type: disk
+        path: /home
+        source: /srv/machines/mybox/home
+        shift: "true"
+      srv:
+        type: disk
+        path: /srv
+        source: /srv/machines/mybox/srv
+        shift: "true"
+
+  # KVM + libvirt + QEMU inside. Inside the container:
+  #   sudo pacman -S libvirt qemu-base qemu-system-x86 virt-manager \
+  #       edk2-ovmf swtpm dnsmasq dmidecode iptables-nft bridge-utils
+  #   sudo usermod -aG libvirt,kvm <user>
+  #   sudo systemctl enable --now libvirtd
+  # For VM tap networking compose `-p tun` (/dev/net/tun). vhost-net /
+  # vhost-vsock are perf knobs (VMs still work without them).
+  - name: virt
+    description: KVM + libvirt + QEMU
+    devices:
+      kvm:
+        type: unix-char
+        source: /dev/kvm
+        path: /dev/kvm
+      vhost-net:
+        type: unix-char
+        source: /dev/vhost-net
+        path: /dev/vhost-net
+      vhost-vsock:
+        type: unix-char
+        source: /dev/vhost-vsock
+        path: /dev/vhost-vsock
+
+  # Run a Wayland compositor (niri/sway/hyprland) INSIDE the container.
+  # Rare; the usual pattern is `gui` (client of the host compositor).
+  # Host prereq: text-mode target so DRM master is free
+  #   sudo systemctl set-default multi-user.target
+  # Container: install seatd + compositor; enter via `incus console`
+  # (PAM session) then `niri-session`.
+  - name: desktop
+    description: Compositor inside (TTYs + uinput)
+    devices:
+      tty0: { type: disk, source: /dev/tty0, path: /dev/tty0 }
+      tty1: { type: disk, source: /dev/tty1, path: /dev/tty1 }
+      tty2: { type: disk, source: /dev/tty2, path: /dev/tty2 }
+      tty3: { type: disk, source: /dev/tty3, path: /dev/tty3 }
+      tty4: { type: disk, source: /dev/tty4, path: /dev/tty4 }
+      uinput: { type: disk, source: /dev/uinput, path: /dev/uinput }
+
+  # Generic host → container shared dir at /mnt/shared, idmapped so files
+  # created inside land on the host as real uid 1000 (editable by you).
+  # Put symlinks under /mnt/shared on the host (repos, downloads, media).
+  - name: shared-folder
+    description: Share host /mnt/shared at /mnt/shared (shift=true)
+    devices:
+      shared:
+        type: disk
+        source: /mnt/shared
+        path: /mnt/shared
+        shift: "true"
+
+  # Container UID 0 == host UID 0 — compromise inside = compromise host
+  # root. Loses the userns shift. Only for rootful Docker/Podman edge
+  # cases or in-container module loading. DON'T unless required.
+  - name: privileged
+    description: Privileged — DON'T unless required
+    config:
+      security.privileged: "true"
+      security.nesting: "true"

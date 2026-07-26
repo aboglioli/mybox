@@ -1,0 +1,44 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**.md'
+      - 'LICENSE'
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build image
+        run: |
+          podman build -t "$IMAGE:latest" .
+
+      - name: Smoke test
+        run: |
+          podman run --rm "$IMAGE:latest" /usr/lib/systemd/systemd --version
+          podman run --rm "$IMAGE:latest" test -d /usr/share/factory/etc
+          podman run --rm "$IMAGE:latest" test -x /usr/local/bin/mybox
+
+      - name: Push to GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          VERSION=$(date -u +%Y.%m.%d)
+          podman tag "$IMAGE:latest" "$IMAGE:$VERSION"
+          podman login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
+          podman push "$IMAGE:$VERSION"
+          podman push "$IMAGE:latest"

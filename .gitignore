@@ -1,3 +1,1 @@
-# Stray local build artifacts (e.g. rootfs/tarball exports). The mybox
-# OCI image lives in podman's storage, never in the tree.
-build_out/
+# The mybox OCI image lives in podman's storage, never in the tree.

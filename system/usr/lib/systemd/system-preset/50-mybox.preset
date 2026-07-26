@@ -1,0 +1,92 @@
+# Mybox systemd preset — what's on, what's off.
+#
+# preset-all is run during image build (Containerfile) to wire the
+# enable/disable state of every unit listed here. systemd looks at
+# *.preset files lexicographically; LOWER number wins. Our 50-mybox
+# overrides anything else.
+#
+# Convention: `enable` adds `.wants/` symlinks for [Install] sections;
+# `disable` removes them. Neither truly "masks" — for masking we ship
+# /etc/systemd/system/<unit> → /dev/null symlinks in the etc tree
+# (handled at Containerfile build time).
+
+# --- Enable -----------------------------------------------------------
+
+# Remote access. sshd binds Port 2222 (see
+# /etc/ssh/sshd_config.d/50-mybox.conf) so it doesn't collide with the
+# host's sshd:22 when Network=host is in use.
+enable sshd.service
+
+# LXC bridge/macvlan/veth networking. The base image owns eth0 inside
+# the container; host networking is not supported with shifted idmaps.
+enable systemd-networkd.service
+enable systemd-networkd-wait-online.service
+enable systemd-resolved.service
+
+# /etc seeding from factory tree (cp -an).
+enable mybox-etc-seed.service
+
+# /var seeding from /usr/share/factory/var (first boot of a persistent
+# /var bind) + writable /usr + /opt overlay with upperdir inside /var.
+enable mybox-var-seed.service
+enable mybox-usr-overlay.service
+
+# Create the runtime-configured login user (MYBOX_USER/UID/GID/SHELL
+# env, defaults user/1000/1000/fish). The image bakes no user; this
+# runs before logins, sshd key lookup and linger.
+enable mybox-user-setup.service
+
+# Enable linger for the user at boot so its user manager (and
+# /run/user/<UID>) exists for nested rootless podman without a PAM
+# login. Robust replacement for the build-time linger marker, which
+# logind's StateDirectory= wipes.
+enable mybox-linger.service
+
+# First-boot flathub remote registration (marker-gated, runs once).
+# Only effective when flatpak is installed inside the container.
+enable flatpak-setup.service
+
+# Resume nested containers with --restart=always after a boot (the
+# outer quadlet recreates this container on every restart — without
+# this, restart=always nested containers stay Exited; nested QUADLET
+# containers auto-start regardless). User-scope counterpart is the
+# Upholds= drop-in in user/default.target.d/50-mybox-podman.conf.
+enable podman-restart.service
+
+# Remount /proc/sys read-write at boot so bwrap (flatpak sandbox)
+# can write /proc/sys/user/max_user_namespaces. Without this,
+# `flatpak run` fails with "Read-only file system".
+enable proc-unmask.service
+
+# --- Disable (host-only or kernel-side, useless inside a container) --
+
+disable getty@.service
+disable serial-getty@.service
+disable container-getty@.service
+disable console-getty.service
+
+disable systemd-firstboot.service
+disable systemd-hwdb-update.service
+disable systemd-tmpfiles-setup-dev.service
+disable systemd-binfmt.service
+disable systemd-machine-id-commit.service
+disable systemd-modules-load.service
+disable systemd-sysctl.service
+disable systemd-udevd.service
+disable systemd-udevd-control.socket
+disable systemd-udevd-kernel.socket
+disable systemd-udev-trigger.service
+
+# Mounts the kernel/host owns
+disable dev-hugepages.mount
+disable sys-kernel-config.mount
+disable sys-fs-fuse-connections.mount
+disable sys-kernel-debug.mount
+disable sys-kernel-tracing.mount
+disable proc-sys-fs-binfmt_misc.automount
+disable proc-sys-fs-binfmt_misc.mount
+
+# Everything else stays off unless mybox explicitly enables it above.
+# Arch vendor presets enable many host-style services by default; mybox
+# is a system container, so service activation should be intentional.
+disable *

@@ -1,0 +1,34 @@
+# Xwayland INSIDE the container, as a client of the host Wayland
+# compositor — gives a real in-container DISPLAY=:0 (matches gui.conf).
+#
+# Why not the host's :0: niri/xwayland-satellite keep :0 only as an
+# ABSTRACT socket (@/tmp/.X11-unix/X0); the filesystem socket is
+# unlinked, and abstract sockets are network-namespace scoped, so a
+# container (its own netns) can never reach it. Running our own Xwayland
+# as a Wayland client sidesteps all of that.
+#
+# Why not the packaged xwayland-satellite.service: it BindsTo
+# graphical-session.target, which never activates in a client-of-host
+# container (no compositor here). This unit targets default.target and
+# gates on the host Wayland socket instead.
+#
+# Requires `xorg-xwayland` + `xwayland-satellite` installed; the
+# Condition keeps it a clean no-op when they (or the host socket) are
+# absent. Autostarted by the user default.target drop-in (Upholds=).
+[Unit]
+Description=Xwayland inside the container (host :0 is unreachable)
+ConditionPathExistsGlob=/mnt/host/wayland-*
+Requires=mybox-host-sockets.service
+After=mybox-host-sockets.service
+
+[Service]
+Type=notify
+NotifyAccess=all
+# :0 → DISPLAY=:0 (gui.conf). WAYLAND_DISPLAY comes from the user
+# environment (gui.conf → /run/user/…/wayland-1 via the socket link).
+ExecStart=/usr/bin/xwayland-satellite :0
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

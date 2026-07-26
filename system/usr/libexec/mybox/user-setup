@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Create the runtime-configured login user. Runs once per rootfs via
+# mybox-user-setup.service — with the persistent root overlay
+# (01-persist-root.conf) the created user lands in the overlay upperdir
+# and survives container recreation; after a factory reset (wiping the
+# upperdir) the service simply re-creates it on the next boot.
+#
+# Configuration comes from the container environment (systemd PID 1
+# inherits podman's env block and propagates it to units):
+#
+#   MYBOX_USER    login name          default: user
+#   MYBOX_UID     numeric uid         default: 1000
+#   MYBOX_GID     numeric gid         default: 1000
+#   MYBOX_SHELL   login shell         default: /usr/bin/fish
+#
+# Set them via Environment= in the quadlet (or a *.container.d drop-in),
+# EnvironmentFile=/srv/<name>/container.env, or `-e` on podman run.
+# Fully non-interactive: no passwd prompts (empty password — auth is
+# ssh keys or podman exec), no useradd interaction.
+set -euo pipefail
+
+# systemd PID 1 does NOT propagate its inherited (podman-provided)
+# environment to units — read the MYBOX_* vars straight from
+# /proc/1/environ, letting a unit-level Environment= still override.
+while IFS='=' read -r -d '' k v; do
+    case "$k" in MYBOX_*) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+done < /proc/1/environ
+
+name="${MYBOX_USER:-user}"
+uid="${MYBOX_UID:-1000}"
+gid="${MYBOX_GID:-1000}"
+shell="${MYBOX_SHELL:-/usr/bin/fish}"
+
+# Per-user service-data dir (nested quadlets keep volumes under
+# /srv/users/<uid>, e.g. Volume=/srv/users/%U/...). Runs every boot,
+# BEFORE the user-exists guard — /srv may be a fresh bind even when
+# the user record already persists in /etc.
+install -d -m 0755 -o "$uid" -g "$gid" "/srv/users/$uid"
+
+if getent passwd "$name" >/dev/null; then
+    exit 0
+fi
+
+getent group "$name" >/dev/null || groupadd -g "$gid" "$name"
+for g in libvirt audio; do
+    getent group "$g" >/dev/null || groupadd -r "$g"
+done
+
+# -m creates /home/<name> inside the (possibly bind-mounted) /home;
+# on a re-run over a factory-reset root with a persistent home the dir
+# already exists — useradd warns about skipped skel copy but succeeds.
+useradd -m -u "$uid" -g "$gid" \
+    -G wheel,video,render,input,audio,kvm,libvirt \
+    -s "$shell" "$name"
+passwd -d "$name" >/dev/null
+
+mkdir -p /etc/sudoers.d
+printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$name" > "/etc/sudoers.d/$name"
+chmod 0440 "/etc/sudoers.d/$name"
+
+# APPEND (>>) — /etc/subuid may already carry ranges we must keep
+# (e.g. a root range for rootful-inside-rootless podman setups).
+# The grep guard keeps re-runs from duplicating the user's line.
+grep -q "^${name}:" /etc/subuid 2>/dev/null || echo "${name}:100000:65536" >> /etc/subuid
+grep -q "^${name}:" /etc/subgid 2>/dev/null || echo "${name}:100000:65536" >> /etc/subgid

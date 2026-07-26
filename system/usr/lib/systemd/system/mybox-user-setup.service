@@ -1,0 +1,26 @@
+# Create the login user at boot from MYBOX_USER / MYBOX_UID /
+# MYBOX_GID / MYBOX_SHELL env vars (podman env → PID 1 → units).
+# The image bakes NO user — one generic image serves any box; each
+# container names its user at runtime (quadlet Environment= drop-in,
+# EnvironmentFile=/srv/<name>/container.env, or `-e` flags).
+#
+# Idempotent: exits immediately when the user already exists. With the
+# persistent root overlay the user record lives in the upperdir, so
+# this effectively runs once per rootfs lifetime.
+#
+# Ordering: before systemd-user-sessions (gates logins), sshd (key
+# lookup needs the account) and mybox-linger (lingers this user).
+[Unit]
+Description=Create the runtime-configured login user
+Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
+After=local-fs.target mybox-etc-seed.service
+Before=systemd-user-sessions.service sshd.service mybox-linger.service
+ConditionVirtualization=container
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/mybox/user-setup
+
+[Install]
+WantedBy=multi-user.target

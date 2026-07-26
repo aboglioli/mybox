@@ -1,0 +1,17 @@
+[Unit]
+Description=Ensure flathub remote is configured (system-wide)
+# Marker-gated oneshot. /var/lib/mybox/.marks/flatpak-setup.done is
+# created on success; service skips on subsequent boots.
+ConditionPathExists=!/var/lib/mybox/.marks/flatpak-setup.done
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/mkdir -p /var/lib/mybox/.marks
+ExecStart=/usr/libexec/mybox/flatpak-setup
+ExecStartPost=/usr/bin/touch /var/lib/mybox/.marks/flatpak-setup.done
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

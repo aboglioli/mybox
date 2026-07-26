@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Add flathub as a system-wide remote. Idempotent — runs once at
+# first boot via flatpak-setup.service, marker-gated under
+# /var/lib/mybox/.marks/.
+flatpak remote-add --if-not-exists --system flathub \
+    https://flathub.org/repo/flathub.flatpakrepo

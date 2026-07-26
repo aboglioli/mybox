@@ -1,0 +1,20 @@
+// Wheel-group members install / update / modify flatpak repos
+// without re-entering a password. Same pattern as ublue + myosi.
+// User already authenticated to the session; no value in
+// re-prompting per-action for a tool the user obviously trusts.
+//
+// Per the docker/podman/flatpak pattern: this gives `flatpak
+// install --system <app>` and `flatpak update` to anyone in wheel.
+// User-scope `flatpak install --user` doesn't need polkit and works
+// for any user regardless.
+
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.Flatpak.app-install" ||
+         action.id == "org.freedesktop.Flatpak.runtime-install" ||
+         action.id == "org.freedesktop.Flatpak.app-update" ||
+         action.id == "org.freedesktop.Flatpak.runtime-update" ||
+         action.id == "org.freedesktop.Flatpak.modify-repo") &&
+        subject.isInGroup("wheel")) {
+        return polkit.Result.YES;
+    }
+});

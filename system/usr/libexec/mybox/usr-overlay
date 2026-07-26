@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# Mount writable overlays over /usr and /opt with the upperdir INSIDE
+# /var (/var/lib/mybox/overlay/<tree>/{diff,work}).
+#
+# This is how the read-only-image model gets a mutable /usr: the image
+# stays the pristine lower layer, every write (pacman -S, nvidia
+# userland from `mybox install-nvidia`) lands in the upper. When /var
+# is a persistent bind, those writes survive container recreation —
+# and because the LOWER is the live image tree, swapping in a newly
+# built image rebases /usr instantly on the next start (upper entries
+# shadow only the paths they touch).
+#
+# Why in-container (a boot service) and not a podman `:O` volume:
+# podman/crun cannot set up an overlay-at-/ under --userns=auto
+# (github.com/containers/podman/issues/23211); mounting from inside
+# the container's own userns (ns-root + SYS_ADMIN, `userxattr` for
+# unprivileged whiteouts) works on any runtime and keeps the diff
+# next to the pacman db so /usr state and package state persist (or
+# reset) TOGETHER.
+set -euo pipefail
+
+base=/var/lib/mybox/overlay
+
+for tree in usr opt; do
+    if mountpoint -q "/$tree"; then
+        continue
+    fi
+    mkdir -p "$base/$tree/diff" "$base/$tree/work"
+    mount -t overlay "mybox-$tree" \
+        -o "lowerdir=/$tree,upperdir=$base/$tree/diff,workdir=$base/$tree/work,userxattr" \
+        "/$tree"
+done

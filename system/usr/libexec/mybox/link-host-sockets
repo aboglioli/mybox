@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Client-of-host GUI: the container runtime binds the host's Wayland /
+# PipeWire / Pulse / DBus sockets under /mnt/host — NOT /run/user, which
+# logind re-creates as a fresh tmpfs at login and would shadow. Symlink
+# EVERYTHING present at /mnt/host into XDG_RUNTIME_DIR (glob, so any
+# socket name resolves at the standard path: wayland-0/1/2..., pipewire-0
+# + pipewire-0-manager, pulse, bus, ...). libwayland / libpulse /
+# pipewire and flatpak's --socket=* then find them with NO per-app env,
+# and gui.conf's relative paths (WAYLAND_DISPLAY=wayland-1, PULSE_SERVER=
+# unix:$XDG_RUNTIME_DIR/pulse/native) resolve.
+#
+# No-op in compositor-inside (desktop) mode: with no host binds under
+# /mnt/host there is nothing to link, and the inside session owns its own
+# sockets under /run/user. Wired via mybox-host-sockets.service
+# (ConditionPathExistsGlob=/mnt/host/*).
+set -eu
+
+run="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+mkdir -p "$run"
+
+# Link every host socket/dir bound under /mnt/host into XDG_RUNTIME_DIR.
+# `[ -e ]` skips the literal glob when /mnt/host is empty (nullglob off).
+#
+# NEVER touch `bus`: /run/user/<uid>/bus is the container's OWN session
+# bus (created by dbus.socket). Symlinking a host bus over it kills the
+# in-container D-Bus and, with it, nested rootless podman's systemd
+# cgroup manager. `just run` already declines to bind the host bus; this
+# is the defence in depth so no stray /mnt/host/bus can ever clobber it.
+for src in /mnt/host/*; do
+    [ -e "$src" ] || continue
+    name="$(basename -- "$src")"
+    [ "$name" = bus ] && continue
+    ln -sfn "$src" "$run/$name"
+done
+
+exit 0

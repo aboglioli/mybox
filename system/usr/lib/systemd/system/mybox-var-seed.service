@@ -1,0 +1,30 @@
+# Seed /var from the /usr/share/factory/var tree on first boot only.
+#
+# Exact parallel to mybox-etc-seed.service: when /var is a persistent
+# host bind (Volume=/srv/<name>/var:/var:idmap) it arrives EMPTY on
+# first boot — this copies the image's factory /var (pacman db,
+# flatpak dirs, mybox marker dirs) into it. Subsequent boots: /var is
+# populated → condition fails → skipped, user state preserved.
+#
+# Without a /var bind the image's own /var is non-empty → skipped
+# every boot. Must run before ANY /var writer (tmpfiles, journal
+# flush, pacman) — hence DefaultDependencies=no + the Before= list.
+
+[Unit]
+Description=Seed /var from /usr/share/factory/var (first boot only)
+Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
+DefaultDependencies=no
+Before=local-fs.target sysinit.target basic.target
+Before=systemd-tmpfiles-setup.service systemd-journal-flush.service
+ConditionPathExists=/usr/share/factory/var
+ConditionDirectoryNotEmpty=!/var
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/bin/cp -a /usr/share/factory/var/. /var/
+
+[Install]
+WantedBy=sysinit.target

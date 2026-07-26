@@ -1,0 +1,31 @@
+# Writable overlay over /usr and /opt, upperdir inside /var — the
+# mutable layer of the read-only-image model. See the script for the
+# full rationale (podman's own overlay-at-/ is broken under
+# userns=auto, so the container mounts its overlays itself).
+#
+# Runs after mybox-var-seed (upper dirs live in /var) and before
+# every /usr consumer beyond early boot. PID 1 and already-running
+# early units keep their open files (same lower inodes); everything
+# started later resolves through the overlay.
+#
+# Ephemeral runs (no /var bind): still mounts, upper just lives in
+# the container layer and dies with it — harmless and uniform.
+
+[Unit]
+Description=Writable /usr + /opt overlay (upperdir in /var)
+Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
+DefaultDependencies=no
+After=mybox-var-seed.service
+Before=local-fs.target sysinit.target basic.target
+Before=systemd-tmpfiles-setup.service
+ConditionVirtualization=container
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/libexec/mybox/usr-overlay
+
+[Install]
+WantedBy=sysinit.target

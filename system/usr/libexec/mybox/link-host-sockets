@@ -24,8 +24,8 @@ mkdir -p "$run"
 # NEVER touch `bus`: /run/user/<uid>/bus is the container's OWN session
 # bus (created by dbus.socket). Symlinking a host bus over it kills the
 # in-container D-Bus and, with it, nested rootless podman's systemd
-# cgroup manager. `just run` already declines to bind the host bus; this
-# is the defence in depth so no stray /mnt/host/bus can ever clobber it.
+# cgroup manager. The gui drop-in never binds the host bus; this is the
+# defence in depth so no stray /mnt/host/bus can ever clobber it.
 for src in /mnt/host/*; do
     [ -e "$src" ] || continue
     name="$(basename -- "$src")"

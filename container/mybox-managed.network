@@ -1,29 +1,12 @@
-# =====================================================================
-# mybox-managed.network — podman-managed bridge with NAT outbound.
-# =====================================================================
+# mybox-managed.network — podman-managed bridge, NAT outbound.
 #
-# Container gets an internal IP on a podman-created bridge. Outbound
-# is NAT'd through the host's networking; inbound needs explicit
-# PublishPort= entries in the .container file.
-#
-# Works on ANY host — no LAN topology assumptions. Loses the "own
-# LAN identity" model, but the simplest option that doesn't share
-# host's netns entirely (so iptables / firewall rules inside the
-# container stay isolated from host's).
-#
-# Use case:
-#   * Hosts without br0 setup
-#   * Hosts where the LAN doesn't allow DHCP for new MACs
-#   * Wifi hosts (where macvlan can't work)
-#   * Quick testing
-#
-# To expose sshd from outside, add to the .container:
-#   PublishPort=2222:2222
-# Then `ssh -p 2222 user@<host-ip>` reaches the container.
+# Works on any host (no LAN topology assumptions, wifi OK) at the cost
+# of the "own LAN identity" model. Inbound needs PublishPort= in the
+# .container (e.g. PublishPort=2222:2222 for sshd).
 
 [Network]
 NetworkName=mybox-lan
 Driver=bridge
 Subnet=10.89.0.0/24
 Gateway=10.89.0.1
-# DisableDNS=true   # uncomment if you want to skip podman's DNS
+# DisableDNS=true   # skip podman's DNS

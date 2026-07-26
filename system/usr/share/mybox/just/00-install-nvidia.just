@@ -1,42 +1,12 @@
-# Install matched NVIDIA userland inside the container via the
-# official .run installer from nvidia.com.
+# Install NVIDIA userland matching the HOST driver via the official
+# .run installer (--no-kernel-modules — the host kernel owns the
+# module; in-container userland must match its version exactly).
+# Re-run after every host driver upgrade: the installer replaces the
+# prior install in place, no uninstall/marker/reboot.
 #
-# Why a recipe and not the LXC hook:
-#   incus's `nvidia.runtime: true` (libnvidia-container) injects only
-#   ~75% of the host nvidia .so files and ships no Vulkan ICD / EGL
-#   vendor JSON manifests. Driver init fails — Vulkan loader sees the
-#   nvidia ICD but vk_icdGetInstanceProcAddr returns NULL for
-#   vkCreateInstance, applications fall back to mesa/iGPU. The .run
-#   installer drops the complete, matched userland in one shot.
-#   mybox.nspawn has no auto-injection at all and hits the same
-#   problem.
-#
-# Why a script and not a systemd oneshot:
-#   Driver upgrades on the host (rpmfusion akmod, .run, sysupdate)
-#   bump the version periodically. The kernel module is whatever the
-#   host loads; in-container userland must match exactly. Re-running
-#   this recipe picks up the new version from /sys/module/nvidia/
-#   version and lets nvidia-installer upgrade in place — no
-#   uninstall, no marker file to delete, no reboot. A first-boot
-#   one-shot can't model that lifecycle cleanly.
-#
-# Upgrade-in-place:
-#   nvidia-installer with --silent detects the previously installed
-#   version under /usr/share/nvidia/nvidia-uninstaller-data and
-#   replaces every file owned by the prior install before laying
-#   down the new bits (`Installing 'NVIDIA Accelerated Graphics
-#   Driver for Linux-x86_64' (<NEW>)` followed by
-#   `An NVIDIA kernel module 'nvidia' appears to already be loaded
-#   ... not installing kernel modules` because we pass
-#   --no-kernel-modules). Works distro-agnostic — the installer's
-#   inventory is its own ledger, not the host package manager's.
-#
-# Distros covered (via /etc/os-release ID + ID_LIKE fallback):
-#   Arch / CachyOS / EndeavourOS / Manjaro
-#   Debian / Ubuntu (and *-LTS)
-#   Fedora / RHEL / Rocky / Alma
-#   openSUSE / SLES
-#   Alpine
+# Used with the raw-device path (31-nvidia-raw.conf); the CDI path
+# (30-nvidia.conf) injects host userland and doesn't need this.
+# Distro-agnostic via /etc/os-release ID + ID_LIKE.
 
 [group('nvidia')]
 install-nvidia:
@@ -58,18 +28,12 @@ install-nvidia:
     DISTRO=${ID:-unknown}
     DISTRO_LIKE=${ID_LIKE:-}
 
-    # Deps per distro. Besides the .run's build/runtime deps, note two
-    # non-obvious ones that the GUI-on-Wayland path needs:
-    #   libglvnd  the vendor-neutral GL/EGL dispatch. Installed FIRST so
-    #             it (not the .run) owns libGL/libEGL/... — paired with
-    #             --no-install-libglvnd below to avoid unowned-file
-    #             conflicts on later mesa/flatpak installs.
-    #   mesa/gbm + libdrm  NVIDIA's Wayland presentation backends
-    #             (libnvidia-egl-gbm, libnvidia-egl-wayland) dlopen
-    #             libgbm.so.1 + libdrm.so.2 to allocate swapchain buffers.
-    #             Without them a Vulkan/EGL Wayland client (e.g. vkcube)
-    #             SEGFAULTs creating its wl surface. mesa also gives an
-    #             iGPU GL/Vulkan fallback for non-offloaded apps.
+    # Two non-obvious deps for GUI-on-Wayland:
+    #   libglvnd  installed FIRST so the distro (not the .run) owns the
+    #             GL/EGL dispatch libs — pairs with --no-install-libglvnd.
+    #   mesa/gbm + libdrm  NVIDIA's Wayland backends dlopen libgbm.so.1 +
+    #             libdrm.so.2; without them Vulkan/EGL clients SEGFAULT
+    #             creating their surface.
     install_deps() {
         case "$1" in
             fedora|rhel|centos|rocky|almalinux)
@@ -152,29 +116,10 @@ install-nvidia:
     fi
     chmod +x "$RUN"
 
-    # Flag set:
-    #   --no-kernel-modules            shared host kernel; container
-    #                                  must not load its own
-    #   --no-kernel-module-source      skip nvidia-{kmod,modprobe} src
-    #   --no-distro-scripts            skip dracut / initramfs hooks
-    #   --no-systemd                   skip host-style unit enabling
-    #   --no-nouveau-check             nouveau is the host's concern
-    #   --no-x-check                   no Xorg inside; suppress prompt
-    #   --no-precompiled-interface     not building a kmod
-    #   --no-install-libglvnd          the distro's libglvnd (installed
-    #                                  above) owns libGL/libEGL/libGLX/
-    #                                  libGLdispatch/libOpenGL. Without
-    #                                  this the .run drops its OWN copies
-    #                                  as UNOWNED files → a later
-    #                                  `pacman/dnf/apt install mesa`
-    #                                  (or flatpak, which pulls mesa)
-    #                                  aborts on "conflicting files:
-    #                                  libEGL.so.1 exists in filesystem".
-    #                                  nvidia still installs its VENDOR
-    #                                  libs (libGLX_nvidia, libEGL_nvidia,
-    #                                  the Vulkan ICD) which glvnd routes.
-    #   --silent                       no TUI, EULA auto-accepted;
-    #                                  upgrades over prior install
+    # --no-install-libglvnd is load-bearing: without it the .run drops
+    # its own libEGL/libGL copies as UNOWNED files and a later
+    # mesa install (pacman/dnf/apt/flatpak) aborts on "conflicting
+    # files". The distro libglvnd routes to nvidia's vendor libs.
     "$RUN" \
         --no-kernel-modules \
         --no-kernel-module-source \

@@ -1,64 +1,25 @@
-# =====================================================================
-# mybox-bridge.network — joins host's existing bridge (libvirt-style).
-# =====================================================================
+# mybox-bridge.network — join the host's existing br0 (libvirt-style).
 #
-# Gives the rootful mybox container its OWN LAN IP by attaching its
-# veth to the host's existing `br0` bridge. Container appears as a
-# discrete LAN host:
+# The container's veth becomes a real member of br0 → own LAN IP,
+# pingable from the LAN, DHCP'd by the LAN's server, reachable from
+# the host (unlike macvlan). Requires br0 to exist with the LAN NIC
+# enslaved, plus `netavark-dhcp-proxy.socket` enabled for IPAM=dhcp.
 #
-#   * Pingable from other devices on the LAN
-#   * Reachable via ssh -p 2222 user@<container-ip>
-#   * Can host services on standard ports (game servers, web, ...)
-#   * mDNS / Avahi work
-#
-# Parallel to incus `lan` profile (macvlan).
-#
-# Install at /etc/containers/systemd/ alongside the .container quadlet.
-#
-# Caveats:
-#   * Host CANNOT reach the container directly when both are on the
-#     same macvlan parent (kernel restriction). Workarounds: add a
-#     second macvlan iface on the host pointed at the container, OR
-#     bounce via the LAN gateway.
-#   * Parent interface must support promisc / not be a wifi (most
-#     wifi drivers reject macvlan child interfaces).
-#   * Auto-discover parent: `ip -o route get 1.1.1.1 | awk '{print $5}'`
-#
-# Edit the `parent=` PodmanArgs below to match your host's LAN NIC.
-# =====================================================================
+# Why this over macvlan on such hosts: macvlan can't attach to a
+# bridge slave ("Device or resource busy") nor to the bridge itself
+# (broken ARP forwarding).
 
 [Network]
 NetworkName=mybox-lan
 Driver=bridge
-# `NetworkInterfaceName=br0` tells netavark to JOIN the existing
-# host bridge `br0` instead of creating its own. Container's veth
-# becomes a real member of br0 — appears as a discrete LAN host,
-# pingable from any LAN device, DHCP'd from the LAN's existing
-# DHCP server.
-#
-# `--opt mode=unmanaged` is the key: netavark doesn't try to manage
-# the bridge (no MAC learning takeover, no STP changes). Just
-# attaches the veth pair. Lets br0 stay under libvirt's / your
-# bridge management.
-#
-# Requires:
-#   * `br0` exists on the host (libvirt-style LAN bridge)
-#   * The LAN NIC is enslaved to br0 (so the bridge can forward to LAN)
-#   * `podman-dhcp-proxy.socket` enabled for IPAM=dhcp
-#
-# Why this beats macvlan for our setup: macvlan can't attach to a
-# bridge slave (kernel rejects with "Device or resource busy") and
-# can't attach to the bridge itself (ARP forwarding broken). The
-# bridge-with-NetworkInterfaceName approach uses the same mechanism
-# libvirt VMs use to get LAN IPs through br0.
-# --interface-name has no native [Network] key in podman 5.x — keep
-# as PodmanArgs. The mode= portion DOES have one (Options=).
+# JOIN the existing br0 instead of creating a bridge; mode=unmanaged
+# stops netavark from managing it (bridge stays under libvirt/your
+# control). --interface-name has no native [Network] key in podman 5.x.
 PodmanArgs=--interface-name br0
 Options=mode=unmanaged
 IPAMDriver=dhcp
 
-# Option B alternative — static IPAM via podman's own IPAM:
+# Static IPAM alternative — replace IPAMDriver=dhcp and mode=unmanaged,
+# pin the address with the 80-static-ip.conf drop-in:
 # Subnet=192.168.100.0/24
 # Gateway=192.168.100.1
-# Remove IPAMDriver=dhcp and mode=unmanaged for that path. Set the
-# container's static IP via the 80-static-ip.conf drop-in.

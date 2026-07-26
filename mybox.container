@@ -1,63 +1,25 @@
-# =====================================================================
 # mybox.container — rootful system container quadlet (minimal base).
-# =====================================================================
 #
-# Drops at /etc/containers/systemd/mybox.container, runs as root via
-# systemd (system scope). NOT a rootless quadlet — rootless mybox is
-# too limited for the system-container use case (no own LAN IP, no
-# :idmap binds, no nested rootless podman with a wide subuid range).
+# Rootful on purpose: rootless quadlets can't give this use case an own
+# LAN IP, :idmap binds, or a wide subuid range for nested rootless
+# podman. The userns remap below keeps the workload off host root.
 #
-# DESIGN: this base file carries ONLY identity + security + network.
-# Everything else composes via drop-ins (systemd/quadlet merge rules,
-# podman ≥ 5.0), searched most→least specific for `dev-test.container`:
+# This base carries ONLY identity + security + network. Everything else
+# composes via drop-ins in <name>.container.d/ (see container/ in this
+# repo; `just install` symlinks them). Every path derives from the unit
+# name via %p, so copying this file to another name self-derives its
+# container name and /srv/<name> state dir. NOTE: %p keeps dashes
+# literally; %P would unescape them to slashes — never use %P here.
 #
-#   dev-test.container.d/*.conf     unit-specific
-#   dev-.container.d/*.conf         dash-truncated family
-#   container.d/*.conf              global, ALL .container units
-#
-# Repo drop-ins live in mybox/container/ — copy what you want:
-#
-#   01-persist-root.conf   persistent rootfs overlay under /srv/<name>
-#   02-persist-home.conf   /srv/<name>/home → /home (:idmap)
-#   05-user.conf           runtime user (MYBOX_USER/UID/GID/SHELL env)
-#   10-gui.conf … 80-*.conf   gui / gpu / nvidia / virt / vpn / …
-#
-# Every path in this file and the drop-ins derives from the unit name
-# via systemd specifiers, so `cp mybox.container dev-test.container`
-# self-derives: container name dev-test, state under /srv/dev-test.
-# NOTE: %p keeps dashes literally (dev-test); %P would unescape them
-# to slashes (dev/test) — never use %P here.
-#
-# Install:
-#   sudo cp ~/mybox/mybox.container            /etc/containers/systemd/
-#   sudo cp ~/mybox/container/mybox-bridge.network /etc/containers/systemd/
-#   sudo mkdir -p /etc/containers/systemd/mybox.container.d
-#   sudo cp ~/mybox/container/01-persist-root.conf \
-#           ~/mybox/container/02-persist-home.conf \
-#           ~/mybox/container/05-user.conf \
-#           /etc/containers/systemd/mybox.container.d/
-#   sudo systemctl daemon-reload
-#   sudo systemctl start mybox.service   # quadlets cannot be `enable`d — [Install] wires boot via the generator
-#
-# Enter:
-#   sudo podman exec -it -u <user> mybox /usr/bin/fish -l
-#   ssh -p 2222 <user>@<container-lan-ip>   # if using LAN network
+# Install: `just install && just start` (see justfile), or copy this
+# file + a .network file + drop-ins into /etc/containers/systemd/ and
+# `systemctl daemon-reload && systemctl start mybox`. Quadlets cannot be
+# `enable`d — [Install] wires boot via the generator.
 #
 # Lifecycle (with 01-persist-root.conf):
 #   config change   edit drop-in → daemon-reload → restart (state kept)
-#   image rebase    rebuild/pull image → systemctl restart <name>
-#                   (/usr lower = live image; /etc,/var state replays)
+#   image rebase    rebuild/pull image → restart
 #   factory reset   stop → rm -rf /srv/<name>/{etc,var} → start
-#                   (seeds repopulate from image factories; home kept)
-#
-# UID model (rootful + auto):
-#   /etc/subuid: containers:2000000:1000000 is the allocator pool
-#   container UID 0    → host UID ~2000000  (NOT host root)
-#   container UID 1000 → host UID ~2001000  (NOT host UID 1000)
-#   Bind volumes with `:idmap` translate host UID 1000 ownership to
-#   container UID 1000 view. Rootful CAP_SYS_ADMIN allows the
-#   mount_setattr that rootless EPERMs.
-# =====================================================================
 
 [Unit]
 Description=%p — rootful system container (systemd PID 1)
@@ -70,43 +32,27 @@ HostName=%p
 Image=localhost/mybox:latest
 Exec=/sbin/init
 
-# Register with host's systemd-machined so machinectl integration
-# works just like nspawn / incus containers:
-#   sudo machinectl list / shell <user>@%p / login %p
-#   journalctl -M %p
+# Register with host systemd-machined: machinectl shell/login, journalctl -M.
 Annotation=run.oci.systemd.machine=true
 
-# ---------------------------------------------------------------------
-# systemd-as-PID-1 prereqs + isolation knobs.
-#
-# Hardened set (see mybox/README.md "Security posture"). The userns
-# remap below is the load-bearing control; on top of it we keep the
-# relaxations to the MINIMUM systemd PID 1 + nested podman actually
-# need. Capabilities are namespaced by the userns, so they grant
-# nothing over host-owned resources: SYS_ADMIN (systemd/mounts/
-# nesting), SYS_NICE (scheduling), MKNOD (nested device nodes).
-# Seccomp stays on podman's default profile; /proc stays masked;
-# SELinux label=disable is the one remaining relaxation (stock
-# container_t breaks boot).
-#
-# NET_ADMIN/NET_RAW are deliberately NOT here. Nothing in the base uses
-# them: eth0 is configured host-side by podman/netavark and is
-# `unmanaged` inside, and nested rootless podman gains its own
-# CAP_NET_ADMIN in the userns it creates (the runtime user's capability
-# set is empty either way). The features that DO need them —
-# 40-virt.conf, 70-vpn.conf — each add them via their own
-# AddCapability=, which quadlet appends to this list.
+# Hardened set (see README "Security posture"). The userns remap is the
+# load-bearing control; capabilities are namespaced by it. Kept to the
+# minimum systemd PID 1 + nested podman need: SYS_ADMIN (mounts/
+# nesting), SYS_NICE, MKNOD. Default seccomp; /proc stays masked.
+# NET_ADMIN/NET_RAW deliberately absent — eth0 is configured host-side
+# by netavark, and nested rootless podman gains its own CAP_NET_ADMIN
+# in the userns it creates; 40-virt.conf / 70-vpn.conf append them when
+# the feature needs them.
 AddCapability=SYS_ADMIN SYS_NICE MKNOD
+
+# SELinux: the one remaining relaxation — container_t breaks boot.
 SecurityLabelDisable=true
 
-# Auto-allocated userns from /etc/subuid[containers]. Size=200000 (not
-# 65536) so the image's inner subuid pool (100000:65536 for the runtime
-# user) fits — nested rootless podman needs outer UIDs up to 165535.
+# Auto-allocated userns from /etc/subuid[containers]. Size=200000 so the
+# image's inner subuid pool (100000:65536) fits for nested podman.
 UserNS=auto:size=200000
 
-# No native [Container] keys exist for these two (podman 5.x):
-#   --systemd=always    forces systemd-as-PID-1 handling
-#   --cgroupns=private  PID 1 sees its own cgroup tree as root
+# No native [Container] keys for these (podman 5.x).
 PodmanArgs=--systemd=always
 PodmanArgs=--cgroupns=private
 
@@ -114,46 +60,28 @@ Tmpfs=/run
 Tmpfs=/tmp
 Tmpfs=/var/tmp
 
-# Nested rootless podman needs both of these, and it is a core use case,
-# so they live in the base rather than arriving as a side effect of a
-# virt/VPN drop-in:
-#   /dev/fuse      fuse-overlayfs storage driver
-#   /dev/net/tun   pasta/slirp4netns networking — without it every
-#                  rootless `podman run` dies with
-#                  "pasta failed ... Failed to open() /dev/net/tun"
-#
-# Devices only, NO extra capabilities. Rootless podman runs as the
-# unprivileged user, whose CapPrm/CapEff are empty (verified); it gains
-# CAP_NET_ADMIN inside the nested userns it creates for itself, exactly
-# as on any ordinary host. The NET_ADMIN/NET_RAW below are PID 1's and
-# are irrelevant here — do not add caps for this.
+# Nested rootless podman core needs: fuse-overlayfs storage + pasta
+# networking (without /dev/net/tun every rootless `podman run` fails).
+# Devices only — no extra capabilities for this.
 AddDevice=/dev/fuse
 AddDevice=/dev/net/tun
 
-# Sessions inherit PID 1's memlock limit (the image ships NO
-# limits.d entry — pam_limits would fail user@.service whenever the
-# container cap is lower than a limits.d value). 3 GiB covers
-# real-time audio (pipewire/JACK), Wine/Proton and mmap-heavy loads.
+# Sessions inherit PID 1's memlock limit (image ships no limits.d entry —
+# pam_limits would fail user@.service when the cap is lower). 3 GiB
+# covers real-time audio, Wine/Proton, mmap-heavy loads.
 Ulimit=memlock=3221225472:3221225472
 
-# ---------------------------------------------------------------------
-# Network — pick ONE:
-#   A. Network=mybox-bridge.network    host's existing br0 → real LAN
-#      host, same model as libvirt VMs (DEFAULT)
-#   B. Network=mybox-macvlan.network   own LAN IP via macvlan on a
-#      physical NIC (NIC must NOT be enslaved to a bridge; wired only)
-#   C. Network=mybox-managed.network   podman NAT bridge — works
-#      everywhere, no own LAN identity (forward ports via drop-in)
-#   D. Network=host                    share host netns (sshd :2222)
-# Switch via a drop-in: `Network=` (empty) then the new value.
-# ---------------------------------------------------------------------
+# Network — pick ONE (switch via drop-in: `Network=` empty, then value):
+#   mybox-bridge.network    join existing host br0 → real LAN IP (default)
+#   mybox-macvlan.network   own LAN IP on a physical NIC (not bridged)
+#   mybox-managed.network   podman NAT bridge — works everywhere
+#   host                    share host netns (sshd on :2222)
 Network=mybox-bridge.network
 
-# DNS is baked into the IMAGE (resolved.conf.d + nsswitch `resolve`) —
-# netavark's DHCP plugin overwrites /etc/resolv.conf, so DNS= here
-# would not survive. Override via drop-in `DNS=` if needed.
+# DNS is baked into the image (resolved.conf.d + nsswitch `resolve`) —
+# netavark's DHCP overwrites /etc/resolv.conf, so DNS= here would not
+# survive.
 
-# Auto-update from registry on push
 AutoUpdate=registry
 
 [Service]

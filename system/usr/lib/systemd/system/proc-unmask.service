@@ -1,26 +1,14 @@
 [Unit]
-# Remount /proc/sys read-write so bubblewrap (the sandbox used by
-# flatpak — and by extension bwrap/podman in some configurations)
-# can write /proc/sys/user/max_user_namespaces during its own userns
-# setup. Without this, `flatpak run <app>` fails with:
-#
-#   bwrap: cannot open /proc/sys/user/max_user_namespaces:
-#          Read-only file system
-#
-# Container runtimes (LXC, nspawn) mount /proc/sys read-only as a
-# default hardening measure. We selectively undo that for the host
-# /proc/sys (one specific subtree bwrap actually writes) and also
-# expose a fully-unmasked /proc at /run/proc-unmasked for bwrap's
-# nested procfs mount (which the LXC seccomp would otherwise reject).
-#
-# Same pattern as myosi's nspawn proc-unmask service.
+# Container runtimes mount /proc/sys read-only as hardening; bubblewrap
+# (flatpak's sandbox) needs to write /proc/sys/user/max_user_namespaces
+# during its userns setup or `flatpak run` fails with
+# "bwrap: cannot open /proc/sys/user/max_user_namespaces: Read-only
+# file system". Remount /proc/sys rw and expose an unmasked procfs at
+# /run/proc-unmasked for bwrap's nested procfs mount.
 Description=Unmask procfs for bwrap (flatpak / podman nested sandbox)
 DefaultDependencies=no
 Before=local-fs.target sysinit.target
 RequiresMountsFor=/run
-# Skip on hosts where /proc/sys was never read-only in the first
-# place (no harm running it, but Condition keeps the unit clean
-# on docker-style containers).
 ConditionVirtualization=container
 
 [Service]

@@ -1,45 +1,19 @@
-# Seed /etc from /usr/share/factory/etc on first boot only.
+# Seed /etc from /usr/share/factory/etc — first boot of an empty
+# persistent /etc bind only. A populated /etc (image's own, or user
+# state) fails the condition and is never touched. New factory files
+# from an image upgrade do NOT propagate into a populated bind — /etc
+# reflects what the user put there, no auto-sync.
 #
-# Parallel to myosi-etc-seed.service (initrd-side). Same condition:
-# only runs when /etc is empty. In a container we don't have an
-# initrd, so this runs in PID 1's early sysinit phase — before sshd,
-# before user.slice, before anything that reads from /etc.
-#
-# Three cases:
-#
-#   1. /etc is image's own (no bind mount, no persistent volume).
-#      Image build already populated /etc (and snapshotted it to
-#      /usr/share/factory/etc) so /etc is non-empty → ConditionDirectoryNotEmpty
-#      negation fails → service is skipped. NO COPY runs on every
-#      boot — true one-shot.
-#
-#   2. /etc is a persistent host bind (Volume=/host/etc:/etc).
-#      First boot: bind is empty → condition matches → cp -a copies
-#      the full factory tree. Subsequent boots: /etc is now
-#      populated → condition fails → skipped.
-#
-#   3. /etc bind is populated by the user (after first boot or
-#      from a backup). Condition fails → skipped. User state
-#      preserved exactly.
-#
-# Limitation: after an image upgrade, the new factory /etc may carry new
-# factory files. They don't propagate to a populated /etc bind — that
-# would require either a marker-based re-seed or `cp -an`. We keep
-# the myosi semantic ("/etc reflects what the user put there")
-# rather than auto-sync.
-#
-# `cp -a` (NOT -n) — when this fires, we want the full factory tree
-# on disk. The condition guard means it never runs over a non-empty
-# /etc, so no clobber risk.
+# The quadlet path pre-seeds host-side (01-persist-root.conf) because
+# PID 1 reads /etc before any unit runs; this service is the fallback.
 
 [Unit]
 Description=Seed /etc from /usr/share/factory/etc (first boot only)
 Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
 DefaultDependencies=no
 Before=basic.target sysinit.target local-fs.target
-# Before (NOT After) tmpfiles: tmpfiles-setup orders After=local-fs,
-# so After=tmpfiles here formed an ordering CYCLE with the Before=
-# local-fs line above and systemd dropped this unit from the
+# Before (NOT After) tmpfiles: After=tmpfiles here formed an ordering
+# CYCLE with Before=local-fs and systemd dropped this unit from the
 # first-boot transaction, leaving /etc empty. Seeding must precede
 # every /etc writer anyway.
 Before=systemd-tmpfiles-setup.service

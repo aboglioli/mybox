@@ -17,8 +17,8 @@
 # host's sshd:22 when Network=host is in use.
 enable sshd.service
 
-# LXC bridge/macvlan/veth networking. The base image owns eth0 inside
-# the container; host networking is not supported with shifted idmaps.
+# networkd/resolved for non-podman-managed setups; under podman eth0
+# is configured host-side by netavark and stays unmanaged inside.
 enable systemd-networkd.service
 enable systemd-networkd-wait-online.service
 enable systemd-resolved.service

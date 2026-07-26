@@ -1,5 +1,5 @@
 // Wheel-group members install / update / modify flatpak repos
-// without re-entering a password. Same pattern as ublue + myosi.
+// without re-entering a password.
 // User already authenticated to the session; no value in
 // re-prompting per-action for a tool the user obviously trusts.
 //

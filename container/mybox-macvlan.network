@@ -1,0 +1,34 @@
+# =====================================================================
+# mybox-macvlan.network — own LAN IP via macvlan on physical NIC.
+# =====================================================================
+#
+# Container gets its OWN LAN IP via macvlan attached directly to a
+# physical NIC. Container appears as a real LAN host (different MAC
+# address from host).
+#
+# REQUIRES the LAN NIC to NOT be enslaved to a bridge — kernel rejects
+# macvlan on a bridge slave with "Device or resource busy". Most
+# laptops and typical desktops are fine. Hosts with libvirt-style
+# br0+enp_X_ enslavement need mybox-bridge.network instead.
+#
+# Edit `parent=` to your actual LAN NIC. Discover with:
+#   ip -o route get 1.1.1.1 | awk '{print $5}'
+#
+# Caveats:
+#   * Host CANNOT reach container directly through macvlan (kernel
+#     restriction). Use another LAN device, or add a secondary
+#     macvlan iface on host for host↔container traffic.
+#   * Wifi NICs typically reject macvlan child interfaces. Wired only.
+#   * Requires `netavark-dhcp-proxy.socket` enabled on host for DHCP.
+
+[Network]
+NetworkName=mybox-lan
+Driver=macvlan
+Options=parent=enp1s0
+Options=mode=bridge
+IPAMDriver=dhcp
+
+# Static IPAM alternative — uncomment + drop IPAMDriver=dhcp and add
+# the 80-static-ip.conf drop-in to assign a fixed IP:
+# Subnet=192.168.100.0/24
+# Gateway=192.168.100.1

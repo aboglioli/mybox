@@ -34,11 +34,13 @@ jobs:
 
       - name: Smoke test
         run: |
-          podman run --rm "$IMAGE:latest" bash -c '/usr/lib/systemd/systemd --version'
-          podman run --rm "$IMAGE:latest" test -d /usr/share/factory/etc
-          podman run --rm "$IMAGE:latest" test -d /usr/share/factory/var
-          podman run --rm "$IMAGE:latest" test -x /usr/local/bin/mybox
-          podman run --rm "$IMAGE:latest" test -x /usr/libexec/mybox/user-setup
+          podman run --rm "$IMAGE:latest" bash -ec '
+            /usr/lib/systemd/systemd --version
+            test -d /usr/share/factory/etc
+            test -d /usr/share/factory/var
+            test -x /usr/local/bin/mybox
+            test -x /usr/libexec/mybox/user-setup
+          '
 
       - name: Push to GHCR
         if: startsWith(github.ref, 'refs/tags/')

@@ -60,9 +60,10 @@ Tmpfs=/run
 Tmpfs=/tmp
 Tmpfs=/var/tmp
 
-# Nested rootless podman core needs: fuse-overlayfs storage + pasta
-# networking (without /dev/net/tun every rootless `podman run` fails).
-# Devices only — no extra capabilities for this.
+# /dev/net/tun: pasta opens it in-namespace — without it every nested
+# rootless `podman run` fails. /dev/fuse: flatpak's document portal
+# (hard FUSE dep) + the fuse-overlayfs storage fallback on ephemeral
+# runs. Devices only — no extra capabilities for this.
 AddDevice=/dev/fuse
 AddDevice=/dev/net/tun
 

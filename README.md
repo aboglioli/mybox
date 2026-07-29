@@ -150,7 +150,7 @@ host root:
 | `/proc` masking | kept | `--systemd=always` mounts what PID 1 needs |
 | `SYS_ADMIN SYS_NICE MKNOD` | kept | systemd/mounts/nesting, scheduling, nested device nodes |
 | `NET_ADMIN`/`NET_RAW` | dropped from base | nothing in the base uses them (eth0 is configured host-side; nested podman gets its own in its userns). `40-virt.conf` / `70-vpn.conf` add them back |
-| `/dev/fuse` + `/dev/net/tun` | kept | nested rootless podman (fuse-overlayfs + pasta). Devices only, no capabilities |
+| `/dev/fuse` + `/dev/net/tun` | kept | tun: pasta (nested rootless podman networking). fuse: flatpak document portal + fuse-overlayfs fallback. Devices only, no capabilities |
 | `label=disable` | the one open item | `container_t` breaks boot on an Enforcing host; no dedicated policy module yet |
 
 Fine for a daily-driver box running your own workloads. Run untrusted

@@ -16,6 +16,12 @@ FROM docker.io/archlinux:base
 # systemd is already in archlinux:base; --needed makes it a no-op.
 # Groups: service stack / shell+scm / modern cli / nested podman /
 # flatpak / extras.
+# Nested podman is crun + pasta + netavark; slirp4netns is gone
+# (podman 6 removed it) and buildah/skopeo are vendored into podman.
+# fuse-overlayfs stays ONLY as the storage fallback for ephemeral runs:
+# without a persistent /var bind the nested graphroot sits on the
+# container's own overlay rootfs, and the kernel refuses native
+# overlay-on-overlay.
 RUN pacman-key --init && \
     pacman -Syu --noconfirm --needed && \
     pacman -S  --noconfirm --needed \
@@ -24,7 +30,7 @@ RUN pacman-key --init && \
         eza bat ripgrep fzf fd zoxide starship \
         btop ncdu jq tree tmux neovim \
         rsync unzip \
-        podman buildah skopeo crun fuse-overlayfs slirp4netns passt \
+        podman crun fuse-overlayfs passt \
         netavark aardvark-dns \
         flatpak xdg-utils \
         age atuin dust lazygit zellij diffnav && \

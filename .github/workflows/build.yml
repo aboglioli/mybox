@@ -1,14 +1,16 @@
 name: Build
 
 # Publishing is release-driven: tag the repo (or create a GitHub
-# Release, which creates the tag) as YYYY.MM.DD.XX — XX counts builds
-# within a day (2026.07.28.01, 2026.07.28.02, ...). The tag becomes the
-# image tag on ghcr, plus :latest. Pushes and PRs only validate.
+# Release, which creates the tag) as YYYY.MM.DD or YYYY.MM.DD.XX — the
+# optional XX counts extra builds within a day (2026.07.28,
+# 2026.07.28.01, ...). The tag becomes the image tag on ghcr, plus
+# :latest. Pushes and PRs only validate.
 
 on:
   push:
     branches: [main]
     tags:
+      - '[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9]'
       - '[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].[0-9][0-9]'
   pull_request:
     branches: [main]

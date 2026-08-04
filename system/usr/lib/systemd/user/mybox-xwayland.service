@@ -13,11 +13,14 @@
 # gates on the host Wayland socket instead.
 #
 # Requires `xorg-xwayland` + `xwayland-satellite` installed; the
-# Condition keeps it a clean no-op when they (or the host socket) are
-# absent. Autostarted by the user default.target drop-in (Upholds=).
+# Conditions keep it a clean no-op when the binary or the host socket
+# is absent — without the binary check, Restart=on-failure busy-loops
+# on EXEC every RestartSec forever. Autostarted by the user
+# default.target drop-in (Upholds=).
 [Unit]
 Description=Xwayland inside the container (host :0 is unreachable)
 ConditionPathExistsGlob=/mnt/host/wayland-*
+ConditionPathExists=/usr/bin/xwayland-satellite
 Requires=mybox-host-sockets.service
 After=mybox-host-sockets.service
 

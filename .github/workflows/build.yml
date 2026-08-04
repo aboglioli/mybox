@@ -28,9 +28,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build image
+      - name: Lint shell scripts
         run: |
-          podman build -t "$IMAGE:latest" .
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shopt -s globstar nullglob
+          for f in system/usr/libexec/mybox/* system/usr/local/bin/mybox; do
+            [ -f "$f" ] || continue
+            shellcheck -S warning "$f"
+          done
+
+      - name: Build image
+        # Revision/version labels answer "which commit built this image"
+        # straight from the registry (skopeo inspect / podman inspect).
+        run: |
+          podman build \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME}" \
+            -t "$IMAGE:latest" .
 
       - name: Smoke test
         run: |

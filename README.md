@@ -184,6 +184,17 @@ started (sockets, daemons, `RemainAfterExit=yes` oneshots — see the
 `sockets.target.d` drop-ins). The busy-loop is not theoretical: one
 mis-wired condition unit produced 27,380 restarts in 4.8 h.
 
+**Late-arriving units** (the `/usr` overlay corollary): PID 1 freezes
+the boot job graph at startup, before `mybox-usr-overlay.service`
+mounts at sysinit. A service installed INTO the overlay (`pacman -S`)
+and enabled via `/etc` symlinks is therefore a dangling `Wants=` at the
+next boot — dropped with a warning, never revisited, even after the
+daemon-reload that follows the mount. Every unit mybox ships is baked
+into the image, so this only affects overlay-installed services. Wire
+those through activation that arrives as a post-mount event (`.socket`,
+`.path`, `.timer`, D-Bus) or an `Upholds=` drop-in on a stay-active
+unit; a plain enable needs one manual `systemctl start` per boot.
+
 ## In-container CLI
 
 `mybox` (baked at `/usr/local/bin/mybox`) scans

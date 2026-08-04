@@ -45,6 +45,7 @@ COPY system/etc /etc
 COPY system/usr /usr
 RUN chmod +x /usr/libexec/mybox/flatpak-setup /usr/libexec/mybox/link-host-sockets \
              /usr/libexec/mybox/user-setup /usr/libexec/mybox/usr-overlay \
+             /usr/libexec/mybox/pacman-db-sync \
              /usr/local/bin/mybox
 
 RUN locale-gen

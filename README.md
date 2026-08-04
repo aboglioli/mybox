@@ -175,6 +175,14 @@ trees. With a persistent bind, the host-side `ExecStartPre` pre-seed
 once from the factory; a populated bind is never overwritten. Factory
 reset = `rm -rf /srv/<name>/{etc,var}` while stopped.
 
+One exception: `mybox-pacman-db-sync.service` realigns
+`/var/lib/pacman` with the new image's factory db after a rebase —
+otherwise the stale db makes every pacman install abort on
+"conflicting files" (image-owned files it doesn't know). Entries whose
+files live in the `/usr`+`/opt` overlay upperdir (your own pacman
+installs) are kept while newer than the image; once the image catches
+up, their stale upperdir files are purged and the factory entry wins.
+
 ## Enabling units: `Wants=`, not `Upholds=`
 
 `Upholds=` re-asserts "keep active" every time a unit goes inactive, so

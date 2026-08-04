@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Realign /var/lib/pacman/local with the image's factory db after an
+# image rebase.
+#
+# The persistent /var bind keeps the pacman db from the image that
+# first seeded it, while a rebase swaps the /usr lower to a NEWER
+# package set. pacman then sees files it does not own ("exists in
+# filesystem") and every install aborts on conflicting files. This
+# walks both dbs and, per package, decides who owns the visible files:
+#
+#   entry matches factory            in sync — skip
+#   files come from the image lower  stale entry — replace with (or
+#                                    remove per) the factory entry
+#   files in the overlay upperdir    user pacman install shadows the
+#   (user pacman install)            image. Newer than factory → KEEP
+#                                    (image is behind the user's
+#                                    upgrade). Older → the image caught
+#                                    up: PURGE its upperdir files and
+#                                    take the factory entry — versioned
+#                                    filenames from the new lower
+#                                    (libgallium-<ver>.so) show through
+#                                    the overlay unowned and would
+#                                    conflict forever otherwise
+#   no /usr or /opt files at all     cannot judge from the overlay —
+#                                    keep conservatively
+#
+# Directory paths are ignored when probing the upperdir: parent dirs
+# (usr/lib/ …) exist there as soon as ANY package writes below them.
+set -euo pipefail
+
+live=/var/lib/pacman/local
+factory=/usr/share/factory/var/lib/pacman/local
+upper=/var/lib/mybox/overlay
+
+[[ -d $live && -d $factory ]] || exit 0
+
+classify_pkg() {
+    local files_db=$1 rel has_tree_files=0
+    if [[ ! -f $files_db ]]; then
+        echo none
+        return
+    fi
+    while IFS= read -r rel; do
+        case "$rel" in
+            */) continue ;;
+            usr/*)
+                has_tree_files=1
+                if [[ -e $upper/usr/diff/${rel#usr/} ]]; then
+                    echo user
+                    return
+                fi
+                ;;
+            opt/*)
+                has_tree_files=1
+                if [[ -e $upper/opt/diff/${rel#opt/} ]]; then
+                    echo user
+                    return
+                fi
+                ;;
+        esac
+    done < <(sed -n '/^%FILES%$/,/^$/p' "$files_db" | sed '1d;/^$/d')
+    if [[ $has_tree_files = 1 ]]; then
+        echo baked
+    else
+        echo none
+    fi
+}
+
+purge_upper_files() {
+    local files_db=$1 rel
+    [[ -f $files_db ]] || return 0
+    while IFS= read -r rel; do
+        case "$rel" in
+            */) continue ;;
+            usr/*) rm -f "$upper/usr/diff/${rel#usr/}" ;;
+            opt/*) rm -f "$upper/opt/diff/${rel#opt/}" ;;
+        esac
+    done < <(sed -n '/^%FILES%$/,/^$/p' "$files_db" | sed '1d;/^$/d')
+}
+
+declare -A factory_entry live_entry
+shopt -s nullglob
+for d in "$factory"/*/; do
+    e=${d%/}; e=${e##*/}
+    factory_entry[${e%-*-*}]=$e
+done
+for d in "$live"/*/; do
+    e=${d%/}; e=${e##*/}
+    live_entry[${e%-*-*}]=$e
+done
+
+synced=0 kept=0 removed=0 purged=0
+
+for name in "${!factory_entry[@]}"; do
+    fe=${factory_entry[$name]}
+    le=${live_entry[$name]:-}
+    if [[ $le = "$fe" ]]; then
+        continue
+    fi
+    if [[ -n $le && $(classify_pkg "$live/$le/files") = user ]]; then
+        if [[ $(vercmp "${fe#"$name"-}" "${le#"$name"-}") -le 0 ]]; then
+            kept=$((kept + 1))
+            continue
+        fi
+        purge_upper_files "$live/$le/files"
+        purged=$((purged + 1))
+    fi
+    [[ -n $le ]] && rm -rf "${live:?}/$le"
+    cp -a "$factory/$fe" "$live/$fe"
+    synced=$((synced + 1))
+done
+
+for name in "${!live_entry[@]}"; do
+    if [[ -n ${factory_entry[$name]:-} ]]; then
+        continue
+    fi
+    le=${live_entry[$name]}
+    if [[ $(classify_pkg "$live/$le/files") = baked ]]; then
+        rm -rf "${live:?}/$le"
+        removed=$((removed + 1))
+    fi
+done
+
+if [[ ! -f $live/ALPM_DB_VERSION && -f $factory/ALPM_DB_VERSION ]]; then
+    cp -a "$factory/ALPM_DB_VERSION" "$live/ALPM_DB_VERSION"
+fi
+
+if (( synced || removed )); then
+    echo "pacman db realigned with image: $synced synced ($purged with stale overlay files purged), $removed removed, $kept kept (overlay-owned, newer than image)"
+fi

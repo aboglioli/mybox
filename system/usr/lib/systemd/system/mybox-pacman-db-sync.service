@@ -1,0 +1,32 @@
+# Realign the persistent pacman db with the image after a rebase.
+#
+# A rebase swaps the /usr lower to a newer package set while the
+# persistent /var keeps the db that seeded it — pacman then aborts
+# every install on "conflicting files" (files owned by the image but
+# unknown to the stale db). The script replaces stale entries from
+# /usr/share/factory/var/lib/pacman and drops entries for packages the
+# new image no longer ships, but KEEPS any entry whose files live in
+# the /usr + /opt overlay upperdir — those were installed by the user
+# and still shadow the image.
+#
+# No-op when live and factory dbs already agree (first boot after the
+# seed, ephemeral runs, no rebase since last boot).
+
+[Unit]
+Description=Realign pacman db with the image factory db (post-rebase)
+Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
+DefaultDependencies=no
+After=mybox-var-seed.service
+Before=sysinit.target basic.target
+ConditionPathExists=/usr/share/factory/var/lib/pacman/local
+ConditionPathExists=/var/lib/pacman/local
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+ExecStart=/usr/libexec/mybox/pacman-db-sync
+
+[Install]
+WantedBy=sysinit.target

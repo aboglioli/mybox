@@ -45,7 +45,6 @@ COPY system/etc /etc
 COPY system/usr /usr
 RUN chmod +x /usr/libexec/mybox/flatpak-setup /usr/libexec/mybox/link-host-sockets \
              /usr/libexec/mybox/user-setup /usr/libexec/mybox/usr-overlay \
-             /usr/libexec/mybox/pacman-db-sync \
              /usr/local/bin/mybox
 
 RUN locale-gen
@@ -88,8 +87,8 @@ RUN for u in \
     done
 
 # Mask ostree-system-generator (flatpak → ostree dep): on boot it
-# generates a bogus var.mount that hides the image's /var (pacman db,
-# linger marker). mybox is never ostree-booted.
+# generates a bogus var.mount that hides the image's /var (linger
+# marker, flatpak state). mybox is never ostree-booted.
 RUN mkdir -p /etc/systemd/system-generators && \
     ln -sf /dev/null /etc/systemd/system-generators/ostree-system-generator
 
@@ -98,6 +97,17 @@ RUN mkdir -p /var/roothome && \
     cp -a /root/. /var/roothome/ && \
     chmod 0700 /var/roothome && \
     rm -rf /root && ln -s var/roothome /root
+
+# Pacman db lives in /usr (SteamOS-style): the db that describes the
+# image's packages travels WITH the image, and runtime installs write
+# both files and db entries into the same /usr overlay upperdir — the
+# two can never desync across a rebase (a persistent /var db goes stale
+# the moment a new image swaps the /usr lower, and every pacman install
+# then dies on "conflicting files"). /var/lib/pacman stays reachable as
+# a symlink recreated every boot by tmpfiles.d/mybox.conf, so the
+# stock pacman.conf DBPath keeps working.
+RUN mv /var/lib/pacman /usr/lib/pacman && \
+    ln -s ../../usr/lib/pacman /var/lib/pacman
 
 # Freeze /etc and /var as factory trees. rm first: Arch's `filesystem`
 # package ships a skeleton /usr/share/factory/etc — cp'ing onto it would

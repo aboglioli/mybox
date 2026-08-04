@@ -31,11 +31,6 @@ enable mybox-etc-seed.service
 enable mybox-var-seed.service
 enable mybox-usr-overlay.service
 
-# Post-rebase pacman db realignment: a new image swaps the /usr lower
-# but the persistent /var keeps the old db — without this, every
-# pacman install aborts on "conflicting files".
-enable mybox-pacman-db-sync.service
-
 # Create the runtime-configured login user (MYBOX_USER/UID/GID/SHELL
 # env, defaults user/1000/1000/fish). The image bakes no user; this
 # runs before logins, sshd key lookup and linger.

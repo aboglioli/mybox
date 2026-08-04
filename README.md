@@ -40,7 +40,7 @@ boot; nothing of value lives inside it:
 |---|---|---|
 | (image) | `/`, `/usr` + `/opt` lower | pristine lower; rebuild + restart = instant rebase |
 | `/srv/<name>/etc` | `/etc` | `:idmap` bind, seeded once from `/usr/share/factory/etc` |
-| `/srv/<name>/var` | `/var` | `:idmap` bind, seeded once from `/usr/share/factory/var` — pacman db, flatpak state, nested-podman storage, `/usr`+`/opt` diffs, root's home |
+| `/srv/<name>/var` | `/var` | `:idmap` bind, seeded once from `/usr/share/factory/var` — flatpak state, nested-podman storage, `/usr`+`/opt` diffs, root's home (pacman db rides `/usr`) |
 | `/srv/<name>/srv` | `/srv` | `:idmap` bind, starts empty — service data for nested quadlets |
 | `/srv/<name>/home` | `/home` | `:idmap` bind (whole `/home`; the runtime user is created inside by `useradd -m`) |
 | `/srv/<name>/container.env` | env for PID 1 | optional `MYBOX_*` runtime config |
@@ -175,13 +175,15 @@ trees. With a persistent bind, the host-side `ExecStartPre` pre-seed
 once from the factory; a populated bind is never overwritten. Factory
 reset = `rm -rf /srv/<name>/{etc,var}` while stopped.
 
-One exception: `mybox-pacman-db-sync.service` realigns
-`/var/lib/pacman` with the new image's factory db after a rebase —
-otherwise the stale db makes every pacman install abort on
-"conflicting files" (image-owned files it doesn't know). Entries whose
-files live in the `/usr`+`/opt` overlay upperdir (your own pacman
-installs) are kept while newer than the image; once the image catches
-up, their stale upperdir files are purged and the factory entry wins.
+The pacman db is NOT part of the persistent `/var`: it lives inside
+the image at `/usr/lib/pacman` (SteamOS-style; `/var/lib/pacman` is a
+tmpfiles-managed symlink). Db and files travel through the same `/usr`
+overlay — the image lower carries both for baked packages, your pacman
+installs write both to the upperdir — so a rebase can never desync
+them (a persisted db goes stale against the new `/usr` and every
+install dies on "conflicting files"). Corollary: in-place upgrades of
+image-shipped packages shadow the image until the overlay diff is
+reset; prefer rebasing the image over upgrading it from inside.
 
 ## Enabling units: `Wants=`, not `Upholds=`
 

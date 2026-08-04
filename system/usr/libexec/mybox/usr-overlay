@@ -14,9 +14,10 @@
 # podman/crun cannot set up an overlay-at-/ under --userns=auto
 # (github.com/containers/podman/issues/23211); mounting from inside
 # the container's own userns (ns-root + SYS_ADMIN, `userxattr` for
-# unprivileged whiteouts) works on any runtime and keeps the diff
-# next to the pacman db so /usr state and package state persist (or
-# reset) TOGETHER.
+# unprivileged whiteouts) works on any runtime. The pacman db lives
+# inside /usr (image-resident, see Containerfile), so package files
+# and package state ride the SAME overlay — they persist, rebase or
+# reset together.
 set -euo pipefail
 
 base=/var/lib/mybox/overlay

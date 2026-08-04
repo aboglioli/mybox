@@ -2,8 +2,8 @@
 #
 # Exact parallel to mybox-etc-seed.service: when /var is a persistent
 # host bind (Volume=/srv/<name>/var:/var:idmap) it arrives EMPTY on
-# first boot — this copies the image's factory /var (pacman db,
-# flatpak dirs, mybox marker dirs) into it. Subsequent boots: /var is
+# first boot — this copies the image's factory /var (flatpak dirs,
+# mybox marker dirs) into it. Subsequent boots: /var is
 # populated → condition fails → skipped, user state preserved.
 #
 # Without a /var bind the image's own /var is non-empty → skipped

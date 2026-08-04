@@ -28,71 +28,73 @@ install-nvidia:
     DISTRO=${ID:-unknown}
     DISTRO_LIKE=${ID_LIKE:-}
 
-    # Two non-obvious deps for GUI-on-Wayland:
+    # Runtime-only deps — --no-kernel-modules means no toolchain, no
+    # headers, no pkgconf. What GUI-on-Wayland + GPU actually need:
     #   libglvnd  installed FIRST so the distro (not the .run) owns the
     #             GL/EGL dispatch libs — pairs with --no-install-libglvnd.
-    #   mesa/gbm + libdrm  NVIDIA's Wayland backends dlopen libgbm.so.1 +
+    #   gbm + libdrm  NVIDIA's Wayland backends dlopen libgbm.so.1 +
     #             libdrm.so.2; without them Vulkan/EGL clients SEGFAULT
     #             creating their surface.
+    #   vulkan loader, libXext + libxcb (GLX/X11 clients),
+    #   curl (fetch the .run), xz (its payload extraction).
     install_deps() {
         case "$1" in
-            fedora|rhel|centos|rocky|almalinux)
+            fedora)
                 dnf install -y --setopt=install_weak_deps=False \
-                    curl perl gcc make kernel-headers \
-                    pkgconf vulkan-loader \
+                    curl xz vulkan-loader \
                     libglvnd libglvnd-glx libglvnd-egl libglvnd-opengl \
-                    mesa-libgbm libdrm \
-                    libXext libxcb dbus-libs xz pciutils
+                    mesa-libgbm libdrm libXext libxcb
                 ;;
-            debian|ubuntu)
+            debian)
                 export DEBIAN_FRONTEND=noninteractive
                 apt-get update
                 apt-get install -y --no-install-recommends \
-                    curl ca-certificates perl gcc make linux-headers-generic \
-                    pkg-config libvulkan1 \
+                    curl ca-certificates xz-utils libvulkan1 \
                     libglvnd0 libglx0 libgl1 libegl1 \
-                    libgbm1 libdrm2 \
-                    libxext6 libxcb1 libdbus-1-3 xz-utils pciutils
+                    libgbm1 libdrm2 libxext6 libxcb1
                 ;;
-            arch|cachyos|endeavouros|manjaro)
+            arch)
                 pacman -Sy --noconfirm --needed \
-                    curl perl gcc make linux-headers \
-                    pkgconf vulkan-icd-loader \
-                    libglvnd mesa libdrm \
-                    libxext libxcb dbus xz pciutils
+                    curl xz vulkan-icd-loader \
+                    libglvnd mesa libdrm libxext libxcb
                 ;;
-            opensuse*|sles|suse)
+            opensuse)
                 zypper --non-interactive install -y \
-                    curl perl gcc make kernel-default-devel \
-                    pkgconf-pkg-config vulkan-loader \
-                    libglvnd0 libgbm1 libdrm2 \
-                    libXext6 libxcb1 libdbus-1-3 xz pciutils
+                    curl xz vulkan-loader \
+                    libglvnd0 libgbm1 libdrm2 libXext6 libxcb1
                 ;;
             alpine)
                 apk add --no-cache \
-                    curl perl gcc make linux-headers \
-                    pkgconf vulkan-loader \
-                    libglvnd mesa-gbm libdrm \
-                    libxext libxcb dbus-libs xz pciutils
-                ;;
-            *)
-                return 1
+                    curl xz vulkan-loader \
+                    libglvnd mesa-gbm libdrm libxext libxcb
                 ;;
         esac
     }
 
-    if ! install_deps "$DISTRO"; then
-        case "$DISTRO_LIKE" in
-            *debian*)   install_deps debian   ;;
-            *fedora*|*rhel*) install_deps fedora ;;
-            *arch*)     install_deps arch     ;;
-            *suse*)     install_deps opensuse ;;
-            *)
-                echo "unsupported distro: ID=${DISTRO} ID_LIKE=${DISTRO_LIKE}" >&2
-                exit 1
-                ;;
-        esac
-    fi
+    # Resolve the distro FAMILY first, then install once — a package
+    # manager failure must surface as itself, not as "unsupported
+    # distro" (set -e aborts with the manager's own error).
+    case "$DISTRO" in
+        fedora|rhel|centos|rocky|almalinux) FAMILY=fedora ;;
+        debian|ubuntu)                      FAMILY=debian ;;
+        arch|cachyos|endeavouros|manjaro)   FAMILY=arch ;;
+        opensuse*|sles|suse)                FAMILY=opensuse ;;
+        alpine)                             FAMILY=alpine ;;
+        *)
+            case "$DISTRO_LIKE" in
+                *debian*)        FAMILY=debian ;;
+                *fedora*|*rhel*) FAMILY=fedora ;;
+                *arch*)          FAMILY=arch ;;
+                *suse*)          FAMILY=opensuse ;;
+                *)
+                    echo "unsupported distro: ID=${DISTRO} ID_LIKE=${DISTRO_LIKE}" >&2
+                    exit 1
+                    ;;
+            esac
+            ;;
+    esac
+
+    install_deps "$FAMILY"
 
     if [[ -f "$LIB" ]]; then
         echo "nvidia userland ${VER} already matches host — dependencies refreshed"

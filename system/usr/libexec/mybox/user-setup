@@ -52,6 +52,14 @@ if getent passwd "$name" >/dev/null; then
     exit 0
 fi
 
+# Skip when the uid already belongs to another user (persistent /etc
+# with a changed MYBOX_USERNAME) — useradd would fail the unit forever.
+existing=$(getent passwd "$uid" | cut -d: -f1)
+if [ -n "$existing" ]; then
+    echo "user-setup: uid ${uid} already owned by '${existing}', skipping '${name}'" >&2
+    exit 0
+fi
+
 getent group "$name" >/dev/null || groupadd -g "$gid" "$name"
 for g in libvirt audio; do
     getent group "$g" >/dev/null || groupadd -r "$g"

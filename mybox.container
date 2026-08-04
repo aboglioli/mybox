@@ -29,7 +29,11 @@ Wants=network-online.target
 [Container]
 ContainerName=%p
 HostName=%p
-Image=localhost/mybox:latest
+# Published from CI on release tags (YYYY.MM.DD[.XX]); :latest tracks
+# the newest release and lets AutoUpdate=registry roll forward. Pin a
+# date tag here (and in 01-persist-root.conf) to freeze. Local dev:
+# `just build` tags a local build over this same reference.
+Image=ghcr.io/aboglioli/mybox:latest
 Exec=/sbin/init
 
 # Register with host systemd-machined: machinectl shell/login, journalctl -M.

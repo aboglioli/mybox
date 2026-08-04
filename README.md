@@ -69,8 +69,10 @@ echo 'containers:2000000:1000000' | sudo tee -a /etc/subuid /etc/subgid
 sudo useradd -r -s /usr/sbin/nologin containers 2>/dev/null || true
 sudo systemctl enable --now netavark-dhcp-proxy.socket   # for DHCP networks
 
-just build          # image into the ROOTFUL store (the quadlet reads it)
 just install        # symlink quadlet + network + default drop-ins
+just build          # OPTIONAL: local build over the published ghcr
+                    # reference, into the ROOTFUL store; skip it and
+                    # the quadlet pulls ghcr.io/aboglioli/mybox instead
 just start          # systemctl start mybox.service
 just status
 just login          # full PAM session as the runtime user
@@ -81,7 +83,7 @@ the unit's `[Install]` section, so one `just start` survives reboots.
 
 | Recipe | What it does |
 |---|---|
-| `just build` | build the OCI image into the rootful store |
+| `just build` | local build tagged over the published reference, into the rootful store |
 | `just install [drop-ins…]` | symlink quadlet + `.network` + chosen drop-ins, `daemon-reload`. Declarative: removes previously-linked drop-ins not in the set |
 | `just start` / `stop` | start/stop the unit — stop removes the container; `/srv/<name>` survives |
 | `just restart` | recreate against the current image + drop-ins |
@@ -219,9 +221,10 @@ Two drop-ins, pick ONE:
 
 ## Variants
 
-Layer a sibling `Containerfile` with `FROM localhost/mybox:latest` (or
-the published image) for variants: dev toolchains, gaming, CUDA
-compute. All inherit the CLI + recipes + GUI environment.
+Layer a sibling `Containerfile` with
+`FROM ghcr.io/aboglioli/mybox:<tag>` (or a local build) for variants:
+dev toolchains, gaming, CUDA compute. All inherit the CLI + recipes +
+GUI environment.
 
 ## License
 

@@ -8,9 +8,11 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 mybox_dir := justfile_directory()
 
-# Image must land in the ROOTFUL store — the system quadlet reads it;
-# a plain rootless `podman build` would be invisible to it.
-mybox_image := env_var_or_default("MYBOX_IMAGE", "localhost/mybox:latest")
+# Must match Image= in mybox.container — the published ghcr reference.
+# `just build` tags a LOCAL build over it in the ROOTFUL store (the
+# system quadlet reads that store; a rootless build is invisible to it).
+# Skipping `just build` makes the quadlet pull the published image.
+mybox_image := env_var_or_default("MYBOX_IMAGE", "ghcr.io/aboglioli/mybox:latest")
 
 # Unit name: <name>.container → <name>.service, state at /srv/<name>.
 mybox_name := env_var_or_default("MYBOX_CONTAINER", "mybox")

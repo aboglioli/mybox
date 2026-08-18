@@ -111,12 +111,14 @@ AddDevice=/dev/net/tun
 # covers real-time audio, Wine/Proton, mmap-heavy loads.
 Ulimit=memlock=3221225472:3221225472
 
-# Network — pick ONE (switch via drop-in: `Network=` empty, then value):
-#   mybox-bridge.network    join existing host br0 → real LAN IP (default)
-#   mybox-macvlan.network   own LAN IP on a physical NIC (not bridged)
-#   mybox-managed.network   podman NAT bridge — works everywhere
-#   host                    share host netns (sshd on :2222)
-Network=mybox-bridge.network
+# Network — pick ONE (switch via `MYBOX_NETFILE=… just install`):
+#   mybox-nat.network   podman bridge + NAT, works anywhere. Inbound via
+#                       PublishPort= (see 85-publish-ssh.conf)
+#   mybox-lan.network   macvlan: the container is its own host on the LAN
+#                       with its own DHCP lease. Wired NIC only, and the
+#                       HOST cannot reach it (kernel rule)
+#   host                share the host netns entirely (sshd on :2222)
+Network=mybox-nat.network
 
 # DNS is baked into the image (resolved.conf.d + nsswitch `resolve`) —
 # netavark's DHCP overwrites /etc/resolv.conf, so DNS= here would not

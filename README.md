@@ -192,16 +192,38 @@ that directory instead of patching the script (see its `README`).
 
 ## Network options (pick ONE .network file)
 
-| File | Driver | LAN reach | Requires |
-|---|---|---|---|
-| `mybox-bridge.network` | joins existing `br0` | ✅ real LAN IP, host-reachable | `br0` on host |
-| `mybox-macvlan.network` | macvlan on physical NIC | ✅ own LAN IP (host can't reach it) | NIC not enslaved, wired |
-| `mybox-managed.network` | podman bridge + NAT | ⚠️ via `PublishPort=` | works anywhere |
-| (none, `Network=host`) | host netns | ✅ host's IP, sshd at `<host>:2222` | works anywhere |
+Two shapes, and they answer different questions:
 
-Switch via drop-in: `Network=` (empty) + new value. Pin the address
-across recreations with `80-static-ip.conf` (static IPAM) or
-`81-static-mac.conf` (stable DHCP lease).
+| File | What the container is | Reaching it |
+|---|---|---|
+| `mybox-nat.network` (default) | a private address behind the host's NAT | host talks to it directly; the LAN only through `PublishPort=` |
+| `mybox-lan.network` | **its own host on your LAN**, own MAC and DHCP lease | any machine on the LAN, directly — except the host itself |
+
+**NAT** assumes nothing about your network, so it works on wifi, on a
+roaming laptop, in CI. Inbound needs published ports; `85-publish-ssh.conf`
+is in the default drop-in set and maps the container's sshd to
+`<host>:2222`. Copy that file's shape for anything else you serve.
+
+**LAN** is macvlan: the router sees a separate machine and hands it its
+own address, so nothing needs publishing — the VM-like model. It needs a
+**wired** NIC not enslaved to a bridge, `netavark-dhcp-proxy.socket`
+enabled on the host, and `parent=` set to your LAN NIC
+(`ip -o route get 1.1.1.1 | awk '{print $5}'`). Its one hard limit is a
+kernel rule, not a mybox choice: **the host and the container cannot talk
+to each other** over macvlan. Everything else on the LAN can. Drop
+`85-publish-ssh.conf` when using it.
+
+Switch with `MYBOX_NETFILE=mybox-lan.network just install`, then
+`just restart`. Pin the address across recreations with
+`80-static-ip.conf` (static IPAM) or `81-static-mac.conf` (stable DHCP
+lease).
+
+**Editing a `.network` file is not enough on its own.** Quadlet creates
+the podman network object only when it is missing and never reconciles an
+existing one against the file, so an edit — or a switch that reuses the
+name — silently keeps the old object, and the container lands on a subnet
+the file no longer mentions. `just net-reset` deletes it so the next start
+rebuilds it from the file.
 
 ## Security posture
 

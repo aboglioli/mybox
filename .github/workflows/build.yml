@@ -95,7 +95,7 @@ jobs:
           podman run --rm --security-opt label=disable -v "$PWD:/src:ro" \
             "$IMAGE:latest" bash -ec '
               mkdir -p /etc/containers/systemd
-              cp /src/mybox.container /src/container/mybox-bridge.network \
+              cp /src/mybox.container /src/container/mybox-nat.network \
                  /etc/containers/systemd/
               /usr/lib/systemd/system-generators/podman-system-generator \
                  --dryrun > /tmp/q.out

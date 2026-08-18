@@ -1,0 +1,27 @@
+# mybox-nat.network — podman-managed bridge with NAT. THE DEFAULT.
+#
+# The container gets an address inside a private podman network and
+# reaches the world through the host's NAT. Nothing is assumed about
+# your LAN, so this works everywhere: wifi, laptops that roam, hosts
+# with no spare NIC, CI. The host reaches the container directly on its
+# podman IP, and the LAN reaches it only through ports you publish.
+#
+# Inbound needs PublishPort= in a drop-in, because a NAT'd container has
+# no address of its own on the LAN. 85-publish-ssh.conf does that for
+# sshd; copy it for anything else you serve:
+#
+#   PublishPort=8080:80        LAN -> host:8080 -> container:80
+#   PublishPort=127.0.0.1:5432:5432   host-only, not exposed to the LAN
+#
+# Want the container to BE a host on your LAN instead, with its own IP
+# and no publishing? Use mybox-lan.network.
+#
+# The subnet is pinned so firewall rules and any host-side config keep
+# working across recreations. Change it if 10.89.0.0/24 collides with
+# something; podman would otherwise pick a free range on its own.
+
+[Network]
+NetworkName=mybox-nat
+Driver=bridge
+Subnet=10.89.0.0/24
+Gateway=10.89.0.1

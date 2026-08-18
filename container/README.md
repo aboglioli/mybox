@@ -27,6 +27,7 @@ instance gets its own unit name — `mybox-test.container` →
 | `50-desktop.conf` | TTYs, `/dev/uinput`, SYS_TTY_CONFIG for a compositor INSIDE (host text-mode) |
 | `60-shared-folder.conf` | bind `/mnt/shared` |
 | `70-vpn.conf` | in-container VPN (wireguard / tailscale): NET_ADMIN + NET_RAW |
+| `85-publish-ssh.conf` | expose the container's sshd at `<host>:2222` — for `mybox-nat.network`, remove it on `mybox-lan.network` |
 | `80-static-ip.conf` | pin a fixed IP (static IPAM networks) |
 | `81-static-mac.conf` | pin the MAC → stable DHCP lease → stable LAN IP across recreates |
 

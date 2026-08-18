@@ -2,7 +2,8 @@
 # the container is composed lives in mybox.container + container/*.conf;
 # this file only builds, installs the unit files and gets you a shell.
 # The container is disposable (recreated on every restart/boot); state
-# persists under /srv/<name> via the binds in mybox.container itself.
+# persists under /srv/<name>, which mybox.container binds at /.mybox and
+# the pre-init turns into an overlay upper for each image-owned tree.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 

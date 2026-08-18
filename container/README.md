@@ -5,13 +5,13 @@ Podman ≥ 5.0 merges any `<unit>.container.d/*.conf` next to the main
 quadlet into the generated `.service`, same semantics as systemd
 `.service.d/*.conf`.
 
-Persistence is **not** here. `/srv/<name>/{etc,var,home,srv}` is part of
-`mybox.container` itself, created on demand by its `ExecStartPre=` and
-not optional: the `/usr` overlay upperdir has to live on a real
-filesystem, so a container without the `/var` bind boots with a
-read-only `/usr`. A throwaway instance gets its own unit name —
-`mybox-test.container` → `/srv/mybox-test` — and you `rm -rf` that
-directory when done.
+Persistence is **not** here. `mybox.container` binds `/srv/<name>` at
+`/.mybox` and `/usr/libexec/mybox/preinit` builds `/etc`, `/var`, `/usr`
+and `/opt` on top of it as overlays before systemd starts, plus plain
+binds for `/home` and `/srv`. None of it is optional — without the state
+bind every tree stays at its read-only image content. A throwaway
+instance gets its own unit name — `mybox-test.container` →
+`/srv/mybox-test` — and you `rm -rf` that directory when done.
 
 ## Drop-ins
 

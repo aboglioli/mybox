@@ -9,8 +9,13 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 ExecStartPre=/usr/bin/mkdir -p /var/lib/mybox/.marks
-ExecStart=/usr/libexec/mybox/flatpak-setup
-ExecStartPost=/usr/bin/touch /var/lib/mybox/.marks/flatpak-setup.done
+# `-`: registering a remote needs the network, and an offline boot must
+# not leave the whole system `degraded` over an optional convenience.
+# The script writes the marker itself, as its last step, so it lands
+# ONLY on success and a failed attempt simply retries next boot — an
+# ExecStartPost= could not tell the difference ($EXIT_STATUS is set for
+# ExecStop*= only, so it would stamp the marker either way).
+ExecStart=-/usr/libexec/mybox/flatpak-setup
 RemainAfterExit=yes
 
 [Install]

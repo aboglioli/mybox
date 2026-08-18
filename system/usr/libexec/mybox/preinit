@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+# PID 1 pre-init: assemble the root filesystem, then hand off to systemd.
+#
+# Every tree the IMAGE owns is an overlay of image-lower + host-upper, and
+# every upper lives in one host bind at /.mybox. That is the whole idea:
+#
+#   /.mybox/etc/{diff,work}  ->  /etc    lower = the image's /etc
+#   /.mybox/var/{diff,work}  ->  /var
+#   /.mybox/usr/{diff,work}  ->  /usr
+#   /.mybox/opt/{diff,work}  ->  /opt
+#
+# Why a pre-init instead of systemd units: PID 1 reads /etc (machine-id,
+# preset symlinks, masks) before any unit can run, so an /etc overlay
+# mounted by a unit is already too late. exec'ing systemd at the end keeps
+# it as PID 1 — this is the initrd pattern, minus the initrd.
+#
+# Why one state bind rather than an upper inside each tree: the kernel
+# refuses overlayfs as an upperdir, so the uppers cannot live under a tree
+# that is itself overlaid (/var/lib/mybox/overlay, as this used to do, stops
+# working the moment /var becomes an overlay). A single bind that is never
+# overlaid removes the ordering problem entirely — there is no tree to mount
+# before the thing holding its own upper.
+#
+# What this replaces: the /etc and /var seed services and the host-side seed
+# containers. With the image tree as the lower there is nothing to seed —
+# /etc is fully populated on first boot with an empty upper — and, unlike a
+# seeded bind, a newer image's /etc changes actually reach an existing box
+# instead of being frozen at whatever was copied once.
+#
+# NOT `set -e`: a tree that fails to assemble must still leave a bootable
+# box. Each failure is reported and the rest continues.
+set -uo pipefail
+
+STATE=/.mybox
+KEEP=/run/mybox-preinit
+TREES=(etc var usr opt)
+# Bulk payloads: raw binds punched back through the /var overlay. They are
+# not image-derived, they are large (GBs of images and flatpak apps), and a
+# factory reset of /var must not delete them. Must run AFTER /var is
+# overlaid, or the overlay would hide them — which is also why podman cannot
+# mount these for us: everything it binds under /var is shadowed.
+BULK=(var/lib/containers var/lib/flatpak)
+
+log() { printf 'preinit: %s\n' "$*" >&2; }
+
+if ! mountpoint -q "$STATE"; then
+    log "$STATE is not a mount — the host state bind is missing."
+    log "Booting on the bare image: every write dies with the container."
+    exec /sbin/init
+fi
+
+# podman injects these into /etc before we run; an overlay over /etc hides
+# them, taking DNS, the container's hostname and host.containers.internal
+# with it. Stash, then put them back on top of the assembled /etc.
+mkdir -p "$KEEP"
+for f in resolv.conf hosts hostname; do
+    [ -e "/etc/$f" ] && cp -a "/etc/$f" "$KEEP/$f"
+done
+
+for t in "${TREES[@]}"; do
+    if mountpoint -q "/$t"; then
+        log "/$t is already a mountpoint, leaving it alone"
+        continue
+    fi
+    mkdir -p "$STATE/$t/diff" "$STATE/$t/work" || { log "cannot create $STATE/$t"; continue; }
+    # userxattr: unprivileged whiteouts, required inside a user namespace.
+    if ! mount -t overlay "mybox-$t" \
+        -o "lowerdir=/$t,upperdir=$STATE/$t/diff,workdir=$STATE/$t/work,userxattr" "/$t"
+    then
+        log "could not overlay /$t — it stays at the image content, read-only"
+    fi
+done
+
+for f in resolv.conf hosts hostname; do
+    [ -e "$KEEP/$f" ] && cp -a "$KEEP/$f" "/etc/$f"
+done
+
+for b in "${BULK[@]}"; do
+    mkdir -p "$STATE/$b" "/$b" || { log "cannot create /$b"; continue; }
+    mount --bind "$STATE/$b" "/$b" || log "could not bind /$b, it will live in the /var diff"
+done
+
+exec /sbin/init

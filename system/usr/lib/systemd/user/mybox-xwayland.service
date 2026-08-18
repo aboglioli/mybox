@@ -16,7 +16,8 @@
 # Conditions keep it a clean no-op when the binary or the host socket
 # is absent — without the binary check, Restart=on-failure busy-loops
 # on EXEC every RestartSec forever. Autostarted by the user
-# default.target drop-in (Upholds=).
+# default.target drop-in (Wants= — a condition-skipped start leaves the
+# unit inactive, which Upholds= would retry forever).
 [Unit]
 Description=Xwayland inside the container (host :0 is unreachable)
 ConditionPathExistsGlob=/mnt/host/wayland-*

@@ -26,21 +26,22 @@ enable systemd-resolved.service
 # /etc seeding from factory tree (cp -an).
 enable mybox-etc-seed.service
 
-# /var seeding from /usr/share/factory/var (first boot of a persistent
-# /var bind) + writable /usr + /opt overlay with upperdir inside /var.
-enable mybox-var-seed.service
-enable mybox-usr-overlay.service
+# NOT listed here: mybox-etc-seed / mybox-var-seed / mybox-usr-overlay.
+# A preset writes its symlink into /etc, and those three are exactly
+# the units that must run when /etc is still EMPTY (an unseeded bind),
+# so they are enabled the only way that survives that: static
+# .wants symlinks under /usr/lib/systemd/system/sysinit.target.wants/,
+# shipped in the image.
 
 # Create the runtime-configured login user (MYBOX_USER/UID/GID/SHELL
 # env, defaults user/1000/1000/fish). The image bakes no user; this
-# runs before logins, sshd key lookup and linger.
+# runs before logins and sshd key lookup, and also enables linger so
+# the user manager comes up without a PAM login.
 enable mybox-user-setup.service
 
-# Enable linger for the user at boot so its user manager (and
-# /run/user/<UID>) exists for nested rootless podman without a PAM
-# login. Robust replacement for the build-time linger marker, which
-# logind's StateDirectory= wipes.
-enable mybox-linger.service
+# System podman API socket (rootless per-user sockets are enabled
+# globally at build time — see the Containerfile).
+enable podman.socket
 
 # First-boot flathub remote registration (marker-gated, runs once).
 # Only effective when flatpak is installed inside the container.
@@ -49,8 +50,8 @@ enable flatpak-setup.service
 # Resume nested containers with --restart=always after a boot (the
 # outer quadlet recreates this container on every restart — without
 # this, restart=always nested containers stay Exited; nested QUADLET
-# containers auto-start regardless). User-scope counterpart is the
-# Upholds= drop-in in user/default.target.d/50-mybox-podman.conf.
+# containers auto-start regardless). The per-user counterpart is
+# enabled globally at build time (see the Containerfile).
 enable podman-restart.service
 
 # Remount /proc/sys read-write at boot so bwrap (flatpak sandbox)

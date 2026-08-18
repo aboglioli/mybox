@@ -18,6 +18,12 @@
 # inside /usr (image-resident, see Containerfile), so package files
 # and package state ride the SAME overlay — they persist, rebase or
 # reset together.
+#
+# Requires /var to be a host bind mount — which mybox.container makes
+# mandatory. The kernel refuses overlayfs as an upperdir, so without
+# the bind the upperdir lands on the container's own overlay rootfs and
+# this fails; that is a violated contract, not a mode to fall back
+# from, so it is reported as such.
 set -euo pipefail
 
 base=/var/lib/mybox/overlay
@@ -27,7 +33,13 @@ for tree in usr opt; do
         continue
     fi
     mkdir -p "$base/$tree/diff" "$base/$tree/work"
-    mount -t overlay "mybox-$tree" \
+
+    if ! mount -t overlay "mybox-$tree" \
         -o "lowerdir=/$tree,upperdir=$base/$tree/diff,workdir=$base/$tree/work,userxattr" \
-        "/$tree"
+        "/$tree"; then
+        echo "usr-overlay: cannot mount the /$tree overlay. /var must be a host bind" >&2
+        echo "usr-overlay: (Volume=/srv/<name>/var:/var:idmap) — an upperdir cannot live" >&2
+        echo "usr-overlay: on the container's own overlayfs. /$tree stays read-only." >&2
+        exit 1
+    fi
 done

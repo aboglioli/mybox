@@ -45,14 +45,24 @@ Exec=/usr/libexec/mybox/preinit
 Annotation=run.oci.systemd.machine=true
 
 # Hardened set (see README "Security posture"). The userns remap is the
-# load-bearing control; capabilities are namespaced by it. Kept to the
-# minimum systemd PID 1 + nested podman need: SYS_ADMIN (mounts/
-# nesting), SYS_NICE, MKNOD. Default seccomp; /proc stays masked.
-# NET_ADMIN/NET_RAW deliberately absent — eth0 is configured host-side
-# by netavark, and nested rootless podman gains its own CAP_NET_ADMIN
-# in the userns it creates; 40-virt.conf / 70-vpn.conf append them when
-# the feature needs them.
-AddCapability=SYS_ADMIN SYS_NICE MKNOD
+# load-bearing control; capabilities are namespaced by it. SYS_ADMIN
+# (mounts/nesting), SYS_NICE, MKNOD, plus NET_ADMIN/NET_RAW.
+#
+# The net caps are there for NESTED ROOTFUL PODMAN, which is a first-class
+# thing to do on a daily driver: `sudo podman run` inside makes netavark
+# build a bridge, a veth pair and nftables rules in the container's OWN
+# network namespace, and without CAP_NET_ADMIN that dies with
+#
+#   Error: netavark: Netlink error: Operation not permitted (os error 1)
+#
+# Nested ROOTLESS podman never needed them — it creates its own userns and
+# gets the caps there — which is why the base went without for so long.
+#
+# What this does NOT grant: under --userns=auto these caps are namespaced,
+# so they apply to the container's own netns and nothing of the host's.
+# The exception is Network=host, where the netns IS the host's and
+# NET_ADMIN really does mean the host's networking — drop them there.
+AddCapability=SYS_ADMIN SYS_NICE MKNOD NET_ADMIN NET_RAW
 
 # SELinux: the one remaining relaxation — container_t breaks boot.
 SecurityLabelDisable=true

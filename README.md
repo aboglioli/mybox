@@ -252,7 +252,7 @@ host root:
 | default seccomp | kept | biggest attack-surface cut; validated with systemd + nested podman + bwrap + flatpak |
 | `/proc` masking | kept | `--systemd=always` mounts what PID 1 needs |
 | `SYS_ADMIN SYS_NICE MKNOD` | kept | systemd/mounts/nesting, scheduling, nested device nodes |
-| `NET_ADMIN`/`NET_RAW` | dropped from base | nothing in the base uses them (eth0 is configured host-side; nested podman gets its own in its userns). `40-virt.conf` / `70-vpn.conf` add them back |
+| `NET_ADMIN`/`NET_RAW` | in base | nested ROOTFUL podman (`sudo podman run` inside) needs them: netavark builds a bridge, veth and nftables rules in the container's own netns and fails with `Netlink error: Operation not permitted` otherwise. Namespaced by `userns=auto`, so they reach the container's netns and nothing of the host's — **except** under `Network=host`, where the netns is the host's and you should drop them |
 | `/dev/fuse` + `/dev/net/tun` | kept | tun: pasta (nested rootless podman networking). fuse: flatpak document portal + fuse-overlayfs fallback. Devices only, no capabilities |
 | `label=disable` | the one open item | `container_t` breaks boot on an Enforcing host; no dedicated policy module yet |
 

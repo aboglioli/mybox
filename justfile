@@ -97,8 +97,13 @@ logs:
     journalctl -fu {{unit}}
 
 # Fast shell as USER (podman exec, no PAM session).
+# `runuser` inside, not `podman exec -u <name>`: podman resolves a user
+# NAME against the image's /etc/passwd as seen from the host, and the image
+# bakes no user — the account lives in the /etc overlay, which only exists
+# inside the container's mount namespace. `-u 1000` would work; resolving
+# the name in there keeps this recipe taking a name.
 enter user=mybox_username:
-    sudo podman exec -it -u "{{user}}" {{mybox_name}} /usr/bin/fish -l
+    sudo podman exec -it {{mybox_name}} runuser -u "{{user}}" -- /usr/bin/fish -l
 
 # Full PAM/logind session as USER (login -f, empty-password user).
 login user=mybox_username:

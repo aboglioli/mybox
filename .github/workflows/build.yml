@@ -85,14 +85,31 @@ jobs:
       - name: Validate the quadlet
         # mybox.container carries the mandatory state binds now, so a
         # syntax error in it breaks every box at once.
+        #
+        # quadlet comes from the image we just built, NOT the runner:
+        # the generator's path is distro-specific (Arch symlinks it to
+        # ../../podman/quadlet, Fedora to ../../../libexec/podman/
+        # quadlet) and the ubuntu-24.04 runner ships no such file at
+        # all, which is how the first version of this step died.
         run: |
-          sudo mkdir -p /etc/containers/systemd
-          sudo cp mybox.container container/mybox-bridge.network /etc/containers/systemd/
-          sudo /usr/lib/systemd/system-generators/podman-system-generator --dryrun \
-            | tee /tmp/quadlet.out
-          grep -q 'ExecStartPre=.*mkdir -p /srv/%p/etc' /tmp/quadlet.out
-          grep -q 'volume /srv/%p/var:/var:idmap' /tmp/quadlet.out || \
-            grep -q '/srv/%p/var:/var' /tmp/quadlet.out
+          podman run --rm --security-opt label=disable -v "$PWD:/src:ro" \
+            "$IMAGE:latest" bash -ec '
+              mkdir -p /etc/containers/systemd
+              cp /src/mybox.container /src/container/mybox-bridge.network \
+                 /etc/containers/systemd/
+              /usr/lib/systemd/system-generators/podman-system-generator \
+                 --dryrun > /tmp/q.out
+
+              # Persistence is not optional: the state dirs are created
+              # before start and every one of them is bound.
+              grep -q "ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc" /tmp/q.out
+              for d in etc var home srv; do
+                grep -q "/srv/%p/$d:/$d:idmap" /tmp/q.out
+              done
+
+              # And /etc is seeded host-side, before PID 1 reads it.
+              grep -q "usr/share/factory/etc" /tmp/q.out
+            '
 
       - name: Push to GHCR
         if: startsWith(github.ref, 'refs/tags/')

@@ -11,7 +11,7 @@
 #
 # Why a pre-init instead of systemd units: PID 1 reads /etc (machine-id,
 # preset symlinks, masks) before any unit can run, so an /etc overlay
-# mounted by a unit is already too late. exec'ing systemd at the end keeps
+# mounted by a unit is already too late. exec'ing the init at the end keeps
 # it as PID 1 — this is the initrd pattern, minus the initrd.
 #
 # Why one state bind rather than an upper inside each tree: the kernel
@@ -27,14 +27,20 @@
 # seeded bind, a newer image's /etc changes actually reach an existing box
 # instead of being frozen at whatever was copied once.
 #
+# NOTHING HERE IS DISTRO-SPECIFIC ON PURPOSE. The trees are FHS paths, the
+# mounts to preserve are DISCOVERED rather than named, and the init is
+# resolved from the usual locations — so the base image can be swapped for
+# another systemd distro without editing this file.
+#
 # NOT `set -e`: a tree that fails to assemble must still leave a bootable
 # box. Each failure is reported and the rest continues.
 set -uo pipefail
 
 STATE=/.mybox
-KEEP=/run/mybox-preinit
+KEEP=/run/mybox/preserved
 LOWER=/run/mybox/lower
 TREES=(etc var usr opt)
+
 # Bulk payloads: raw binds punched back through the /var overlay. They are
 # not image-derived, they are large (GBs of images and flatpak apps), and a
 # factory reset of /var must not delete them. Must run AFTER /var is
@@ -42,28 +48,70 @@ TREES=(etc var usr opt)
 # mount these for us: everything it binds under /var is shadowed.
 BULK=(var/lib/containers var/lib/flatpak)
 
+# The one mount we deliberately let the overlay swallow. podman mounts a
+# tmpfs here under --systemd=always; letting /var own it instead is what
+# makes the journal survive container recreation. Everything else the
+# runtime put inside a tree we overlay is restored verbatim.
+SKIP_RESTORE=(/var/log/journal)
+
+# Init candidates, most specific first. /sbin/init is a symlink on most
+# distros but not guaranteed to exist on all of them.
+INIT_CANDIDATES=(/usr/lib/systemd/systemd /lib/systemd/systemd /sbin/init /usr/sbin/init)
+
 log() { printf 'preinit: %s\n' "$*" >&2; }
+
+start_init() {
+    local init
+    for init in "${INIT_CANDIDATES[@]}"; do
+        [ -x "$init" ] && exec "$init" "$@"
+    done
+    log "FATAL: no init found in ${INIT_CANDIDATES[*]}"
+    exit 1
+}
+
+in_list() {
+    local needle=$1; shift
+    local item
+    for item in "$@"; do [ "$item" = "$needle" ] && return 0; done
+    return 1
+}
 
 if ! mountpoint -q "$STATE"; then
     log "$STATE is not a mount — the host state bind is missing."
     log "Booting on the bare image: every write dies with the container."
-    exec /sbin/init
+    start_init "$@"
 fi
 
-# podman injects these into /etc before we run; an overlay over /etc hides
-# them, taking DNS, the container's hostname and host.containers.internal
-# with it. Stash, then put them back on top of the assembled /etc.
+# --- preserve whatever the runtime mounted INSIDE a tree we are about to
+# overlay. Discovered from mountinfo rather than named, because the list is
+# the runtime's business and changes with it: podman injects /etc/hosts,
+# /etc/hostname and /etc/resolv.conf for identity and DNS, the quadlet adds
+# a /var/tmp tmpfs, and a future version may add more. An overlay mounted on
+# the parent hides all of them at once, so each is stashed as a BIND (not a
+# copy — the runtime may still rewrite it, e.g. /etc/hosts on network
+# changes) and bound back on top afterwards.
 mkdir -p "$KEEP"
-for f in resolv.conf hosts hostname; do
-    [ -e "/etc/$f" ] && cp -a "/etc/$f" "$KEEP/$f"
-done
+declare -a PRESERVED=()
+while IFS= read -r mnt; do
+    in_list "$mnt" "${SKIP_RESTORE[@]}" && continue
+    stash="$KEEP/${mnt//\//_}"
+    if [ -d "$mnt" ]; then mkdir -p "$stash"; else : > "$stash"; fi
+    if mount --bind "$mnt" "$stash"; then
+        PRESERVED+=("$mnt")
+    else
+        log "could not preserve $mnt, it will be hidden by the overlay"
+    fi
+done < <(awk -v trees="${TREES[*]}" '
+    BEGIN { n = split(trees, t, " ") }
+    { for (i = 1; i <= n; i++) if (index($5, "/" t[i] "/") == 1) { print $5; break } }
+' /proc/self/mountinfo)
 
 for t in "${TREES[@]}"; do
     if mountpoint -q "/$t"; then
         log "/$t is already a mountpoint, leaving it alone"
         continue
     fi
-    mkdir -p "$STATE/$t/diff" "$STATE/$t/work" || { log "cannot create $STATE/$t"; continue; }
+    mkdir -p "/$t" "$STATE/$t/diff" "$STATE/$t/work" || { log "cannot create $STATE/$t"; continue; }
 
     # Publish the pristine tree read-only at $LOWER/<tree> BEFORE the
     # overlay hides it. Once the overlay is mounted the lower has no name
@@ -84,8 +132,12 @@ for t in "${TREES[@]}"; do
     fi
 done
 
-for f in resolv.conf hosts hostname; do
-    [ -e "$KEEP/$f" ] && cp -a "$KEEP/$f" "/etc/$f"
+# --- put the runtime's mounts back on top of the assembled trees.
+for mnt in "${PRESERVED[@]}"; do
+    stash="$KEEP/${mnt//\//_}"
+    if [ -d "$stash" ]; then mkdir -p "$mnt"; else [ -e "$mnt" ] || : > "$mnt"; fi
+    mount --bind "$stash" "$mnt" || log "could not restore $mnt"
+    umount "$stash" 2>/dev/null || true
 done
 
 for b in "${BULK[@]}"; do
@@ -93,4 +145,4 @@ for b in "${BULK[@]}"; do
     mount --bind "$STATE/$b" "/$b" || log "could not bind /$b, it will live in the /var diff"
 done
 
-exec /sbin/init
+start_init "$@"

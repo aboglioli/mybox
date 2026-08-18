@@ -7,7 +7,13 @@
 #
 # Search order matches the generator (vendor → runtime → admin → user,
 # last wins). Handles blank/comment lines, bare and quoted values.
-# No ${VAR} expansion — kept simple on purpose.
+# No ${VAR} expansion — kept simple on purpose, so nothing shipped in
+# environment.d may reference another variable.
+#
+# NOTE: fish picks conf.d files by BASENAME, user dir first, so a
+# ~/.config/fish/conf.d/90-environment.fish shadows this file entirely.
+# Anything the IMAGE must guarantee therefore does not belong here —
+# see 50-xdg-runtime-dir.fish for the pattern.
 
 for env_dir in /usr/lib/environment.d /run/environment.d /etc/environment.d ~/.config/environment.d
     test -d $env_dir; or continue

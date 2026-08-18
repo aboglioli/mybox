@@ -16,7 +16,7 @@
 # `systemctl daemon-reload && systemctl start mybox`. Quadlets cannot be
 # `enable`d — [Install] wires boot via the generator.
 #
-# Lifecycle (with 01-persist-root.conf):
+# Lifecycle:
 #   config change   edit drop-in → daemon-reload → restart (state kept)
 #   image rebase    rebuild/pull image → restart
 #   factory reset   stop → rm -rf /srv/<name>/{etc,var} → start
@@ -31,7 +31,7 @@ ContainerName=%p
 HostName=%p
 # Published from CI on release tags (YYYY.MM.DD[.XX]); :latest tracks
 # the newest release and lets AutoUpdate=registry roll forward. Pin a
-# date tag here (and in 01-persist-root.conf) to freeze. Local dev:
+# date tag here (and in the seed ExecStartPre below) to freeze. Local dev:
 # `just build` tags a local build over this same reference.
 Image=ghcr.io/aboglioli/mybox:latest
 Exec=/sbin/init
@@ -64,6 +64,28 @@ Tmpfs=/run
 Tmpfs=/tmp
 Tmpfs=/var/tmp
 
+# Persistent state — REQUIRED, not a drop-in. The container is
+# recreated on every stop/reload/boot, so everything writable lives on
+# the host under /srv/<name> (derived from the unit name via %p, so
+# mybox-1.container gets /srv/mybox-1 and never collides).
+#
+#   /etc   system config: preset symlinks, users, sshd keys
+#   /var   system state — AND the /usr + /opt overlay upperdirs that
+#          mybox-usr-overlay.service mounts at boot. This is why the
+#          bind is not optional: an upperdir cannot live on the
+#          container's own overlayfs, the kernel refuses it, and /usr
+#          would stay read-only (no pacman, no NVIDIA userland)
+#   /home  user data — outlives factory resets of /etc + /var
+#   /srv   service data for nested quadlets
+#
+# `:idmap` keeps host-side ownership at the container's numeric UIDs.
+# Factory reset: stop → sudo rm -rf /srv/<name>/{etc,var} → start.
+# Throwaway instance: give it its own name, delete /srv/<name> after.
+Volume=/srv/%p/etc:/etc:idmap
+Volume=/srv/%p/var:/var:idmap
+Volume=/srv/%p/home:/home:idmap
+Volume=/srv/%p/srv:/srv:idmap
+
 # /dev/net/tun: pasta opens it in-namespace — without it every nested
 # rootless `podman run` fails. /dev/fuse: flatpak's document portal
 # (hard FUSE dep) + the fuse-overlayfs storage fallback on ephemeral
@@ -92,6 +114,26 @@ AutoUpdate=registry
 [Service]
 Restart=on-failure
 TimeoutStartSec=600
+
+# The state dirs are created on demand, so a new <name>.container just
+# works — no manual mkdir before the first start.
+ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc /srv/%p/var /srv/%p/home /srv/%p/srv
+
+# HOST-SIDE first-boot seeding via a throwaway container. PID 1 reads
+# /etc (machine-id, preset enable symlinks) before any in-container
+# unit could seed it, so an empty bind must be populated beforehand —
+# this is what makes `enable` in the image reach the first boot, and
+# why mybox needs no Wants=/Upholds= drop-ins to bootstrap itself. The
+# in-container mybox-{etc,var}-seed.service remain as fallback for a
+# hand-rolled `podman run`.
+#
+# The seed run is deliberately WITHOUT userns/idmap: it writes real
+# numeric uids that the main container then views through its :idmap
+# binds (`:idmap` here would invert the mapping and EACCES).
+# label=disable matches the main container. KEEP THE IMAGE REFERENCE IN
+# SYNC WITH Image= ABOVE.
+ExecStartPre=/bin/sh -c 'test -n "$(ls -A /srv/%p/etc)" || podman run --rm --security-opt label=disable -v /srv/%p/etc:/seed ghcr.io/aboglioli/mybox:latest cp -a /usr/share/factory/etc/. /seed/'
+ExecStartPre=/bin/sh -c 'test -n "$(ls -A /srv/%p/var)" || podman run --rm --security-opt label=disable -v /srv/%p/var:/seed ghcr.io/aboglioli/mybox:latest cp -a /usr/share/factory/var/. /seed/'
 
 [Install]
 WantedBy=multi-user.target

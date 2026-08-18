@@ -29,10 +29,14 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Lint shell scripts
+        # profile.d is in the list because it ships EXECUTED shell: an
+        # SC2155 there went unnoticed for exactly as long as the glob
+        # omitted it.
         run: |
           sudo apt-get update && sudo apt-get install -y shellcheck
           shopt -s globstar nullglob
-          for f in system/usr/libexec/mybox/* system/usr/local/bin/mybox; do
+          for f in system/usr/libexec/mybox/* system/usr/local/bin/mybox \
+                   system/etc/profile.d/*.sh; do
             [ -f "$f" ] || continue
             shellcheck -S warning "$f"
           done
@@ -54,7 +58,58 @@ jobs:
             test -d /usr/share/factory/var
             test -x /usr/local/bin/mybox
             test -x /usr/libexec/mybox/user-setup
+            test -x /usr/libexec/mybox/usr-overlay
+
+            # Enablement is baked at build time, so its absence is a
+            # build bug, not a runtime surprise: the seed units must be
+            # wired from /usr (they run before /etc is populated) and
+            # the per-session units from the global user preset.
+            test -L /usr/lib/systemd/system/sysinit.target.wants/mybox-etc-seed.service
+            test -L /usr/lib/systemd/system/sysinit.target.wants/mybox-var-seed.service
+            test -L /usr/lib/systemd/system/sysinit.target.wants/mybox-usr-overlay.service
+            test -L /usr/share/factory/etc/systemd/user/default.target.wants/mybox-host-sockets.service
+            test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-user-setup.service
+
+            # sysusers ran at build time, so declared accounts exist in
+            # the factory /etc every box is seeded from.
+            getent passwd qemu >/dev/null
+
+            # Unit files parse. systemd-analyze exits non-zero on any
+            # error, which is the whole point of running it here.
+            systemd-analyze verify \
+              /usr/lib/systemd/system/mybox-*.service \
+              /usr/lib/systemd/system/flatpak-setup.service \
+              /usr/lib/systemd/system/proc-unmask.service
           '
+
+      - name: Validate the quadlet
+        # mybox.container carries the mandatory state binds now, so a
+        # syntax error in it breaks every box at once.
+        #
+        # quadlet comes from the image we just built, NOT the runner:
+        # the generator's path is distro-specific (Arch symlinks it to
+        # ../../podman/quadlet, Fedora to ../../../libexec/podman/
+        # quadlet) and the ubuntu-24.04 runner ships no such file at
+        # all, which is how the first version of this step died.
+        run: |
+          podman run --rm --security-opt label=disable -v "$PWD:/src:ro" \
+            "$IMAGE:latest" bash -ec '
+              mkdir -p /etc/containers/systemd
+              cp /src/mybox.container /src/container/mybox-bridge.network \
+                 /etc/containers/systemd/
+              /usr/lib/systemd/system-generators/podman-system-generator \
+                 --dryrun > /tmp/q.out
+
+              # Persistence is not optional: the state dirs are created
+              # before start and every one of them is bound.
+              grep -q "ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc" /tmp/q.out
+              for d in etc var home srv; do
+                grep -q "/srv/%p/$d:/$d:idmap" /tmp/q.out
+              done
+
+              # And /etc is seeded host-side, before PID 1 reads it.
+              grep -q "usr/share/factory/etc" /tmp/q.out
+            '
 
       - name: Push to GHCR
         if: startsWith(github.ref, 'refs/tags/')

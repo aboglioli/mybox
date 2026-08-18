@@ -5,13 +5,18 @@ Podman ≥ 5.0 merges any `<unit>.container.d/*.conf` next to the main
 quadlet into the generated `.service`, same semantics as systemd
 `.service.d/*.conf`.
 
+Persistence is **not** here. `/srv/<name>/{etc,var,home,srv}` is part of
+`mybox.container` itself, created on demand by its `ExecStartPre=` and
+not optional: the `/usr` overlay upperdir has to live on a real
+filesystem, so a container without the `/var` bind boots with a
+read-only `/usr`. A throwaway instance gets its own unit name —
+`mybox-test.container` → `/srv/mybox-test` — and you `rm -rf` that
+directory when done.
+
 ## Drop-ins
 
 | File | Adds |
 |---|---|
-| `01-persist-root.conf` | persistent `/etc` + `/var` binds from `/srv/<name>` + host-side first-boot seed — with the in-image `/usr`+`/opt` overlay the whole rootfs survives recreation |
-| `02-persist-home.conf` | `/srv/<name>/home` → `/home` (`:idmap`) |
-| `03-persist-srv.conf` | `/srv/<name>/srv` → `/srv` (`:idmap`, nested-quadlet volumes) |
 | `05-user.conf` | runtime login user + ssh keys: `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` env (or `EnvironmentFile=/srv/<name>/container.env`) |
 | `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env |
 | `20-gpu.conf` | `/dev/dri`, `/dev/snd`, `/dev/input` (Intel/AMD stack) |

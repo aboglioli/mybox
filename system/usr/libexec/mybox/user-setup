@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Create the runtime-configured login user. Runs once per rootfs via
-# mybox-user-setup.service — with the persistent root overlay
-# (01-persist-root.conf) the created user lands in the overlay upperdir
-# and survives container recreation; after a factory reset (wiping the
-# upperdir) the service simply re-creates it on the next boot.
+# Create the runtime-configured login user and leave it READY TO USE:
+# account, home, sudo, subuid range, groups, ssh keys, linger.
+#
+# Runs at every boot via mybox-user-setup.service. The account itself
+# lands in the persistent /etc bind, so creation happens once and later
+# boots only re-apply what can drift (groups, keys, linger); after a
+# factory reset of /etc it is simply re-created.
 #
 # Configuration comes from the container environment (systemd PID 1
 # inherits podman's env block and propagates it to units):
@@ -17,6 +19,11 @@
 # EnvironmentFile=/srv/<name>/container.env, or `-e` on podman run.
 # Fully non-interactive: no passwd prompts (empty password — auth is
 # ssh keys or podman exec), no useradd interaction.
+#
+# Creation is one-shot, group binding is EVERY boot: packages installed
+# into the /usr overlay after the fact (libvirt, docker, wireshark…)
+# create their groups late, and the account that already exists would
+# otherwise never join them.
 set -euo pipefail
 
 # systemd PID 1 does NOT propagate its inherited (podman-provided)
@@ -31,16 +38,11 @@ uid="${MYBOX_UID:-1000}"
 gid="${MYBOX_GID:-1000}"
 shell="${MYBOX_SHELL:-/usr/bin/fish}"
 
-# SSH keys from env — comma- or newline-separated. Synced every boot to
-# /etc/ssh/authorized_keys.d/<name> (sshd reads it alongside
-# ~/.ssh/authorized_keys), so env is the source of truth for that file
-# while the user's own ~/.ssh stays untouched. When unset the file is
-# left alone — bind-mount it instead for local setups.
-if [ -n "${MYBOX_AUTHORIZED_KEYS:-}" ]; then
-    install -d -m 0755 /etc/ssh/authorized_keys.d
-    printf '%s\n' "${MYBOX_AUTHORIZED_KEYS//,/$'\n'}" > "/etc/ssh/authorized_keys.d/$name"
-    chmod 0644 "/etc/ssh/authorized_keys.d/$name"
-fi
+# Groups every mybox user gets. Feature-specific additions belong in
+# /usr/share/mybox/user-groups.d/<feature>.conf (one group per line) so
+# a layered variant image adds them without patching this script.
+GROUP_DROPIN_DIR=/usr/share/mybox/user-groups.d
+base_groups=(wheel video render input audio kvm libvirt)
 
 # Per-user service-data dir (nested quadlets keep volumes under
 # /srv/users/<uid>, e.g. Volume=/srv/users/%U/...). Runs every boot,
@@ -48,37 +50,104 @@ fi
 # the user record already persists in /etc.
 install -d -m 0755 -o "$uid" -g "$gid" "/srv/users/$uid"
 
-if getent passwd "$name" >/dev/null; then
-    exit 0
+if ! getent passwd "$name" >/dev/null 2>&1; then
+    # NO pipeline into cut: getent exits 2 on an unused uid, and under
+    # `set -euo pipefail` that aborted the script on the ONE path that
+    # matters — a free uid 1000 on a fresh container, i.e. the user was
+    # never created at all.
+    existing=
+    if entry=$(getent passwd "$uid" 2>/dev/null); then
+        existing=${entry%%:*}
+    fi
+
+    if [ -n "$existing" ]; then
+        # Retarget rather than bail (persistent /etc with a changed
+        # MYBOX_USER): useradd would fail the unit forever, and the
+        # account that DOES own the uid still wants its groups kept in
+        # sync below.
+        echo "user-setup: uid ${uid} already owned by '${existing}', not creating '${name}'" >&2
+        name="$existing"
+    else
+        getent group "$name" >/dev/null 2>&1 || groupadd -g "$gid" "$name"
+
+        # -m creates /home/<name> inside the (possibly bind-mounted)
+        # /home; on a re-run over a factory-reset root with a persistent
+        # home the dir already exists — useradd warns about the skipped
+        # skel copy but succeeds.
+        useradd -m -u "$uid" -g "$gid" -s "$shell" "$name"
+        passwd -d "$name" >/dev/null
+
+        mkdir -p /etc/sudoers.d
+        printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$name" > "/etc/sudoers.d/$name"
+        chmod 0440 "/etc/sudoers.d/$name"
+
+        # APPEND (>>) — /etc/subuid may already carry ranges we must keep
+        # (e.g. a root range for rootful-inside-rootless podman setups).
+        # The grep guard keeps re-runs from duplicating the user's line.
+        grep -q "^${name}:" /etc/subuid 2>/dev/null || echo "${name}:100000:65536" >> /etc/subuid
+        grep -q "^${name}:" /etc/subgid 2>/dev/null || echo "${name}:100000:65536" >> /etc/subgid
+    fi
 fi
 
-# Skip when the uid already belongs to another user (persistent /etc
-# with a changed MYBOX_USERNAME) — useradd would fail the unit forever.
-existing=$(getent passwd "$uid" | cut -d: -f1)
-if [ -n "$existing" ]; then
-    echo "user-setup: uid ${uid} already owned by '${existing}', skipping '${name}'" >&2
-    exit 0
+# SSH keys from env — comma- or newline-separated. Synced every boot to
+# /etc/ssh/authorized_keys.d/<name> (sshd reads it alongside
+# ~/.ssh/authorized_keys), so env is the source of truth for that file
+# while the user's own ~/.ssh stays untouched. When unset the file is
+# left alone — bind-mount it instead for local setups. Written AFTER the
+# account is resolved: sshd looks the file up by the LOGIN name (%u), so
+# a retargeted name has to win over the configured one.
+if [ -n "${MYBOX_AUTHORIZED_KEYS:-}" ]; then
+    install -d -m 0755 /etc/ssh/authorized_keys.d
+    printf '%s\n' "${MYBOX_AUTHORIZED_KEYS//,/$'\n'}" > "/etc/ssh/authorized_keys.d/$name"
+    chmod 0644 "/etc/ssh/authorized_keys.d/$name"
 fi
 
-getent group "$name" >/dev/null || groupadd -g "$gid" "$name"
+# Groups the base image owns but Arch's packages may not have created
+# (audio is dynamic, libvirt ships with libvirt-daemon — installed into
+# the overlay later, if at all).
 for g in libvirt audio; do
-    getent group "$g" >/dev/null || groupadd -r "$g"
+    getent group "$g" >/dev/null 2>&1 || groupadd -r "$g"
 done
 
-# -m creates /home/<name> inside the (possibly bind-mounted) /home;
-# on a re-run over a factory-reset root with a persistent home the dir
-# already exists — useradd warns about skipped skel copy but succeeds.
-useradd -m -u "$uid" -g "$gid" \
-    -G wheel,video,render,input,audio,kvm,libvirt \
-    -s "$shell" "$name"
-passwd -d "$name" >/dev/null
+declare -A wanted=()
+for g in "${base_groups[@]}"; do
+    wanted[$g]=1
+done
+shopt -s nullglob
+for cfg in "$GROUP_DROPIN_DIR"/*.conf; do
+    while IFS= read -r raw || [ -n "$raw" ]; do
+        stripped=${raw%%#*}
+        read -r g _ <<< "$stripped" || true
+        [ -n "${g:-}" ] || continue
+        wanted[$g]=1
+    done < "$cfg"
+done
 
-mkdir -p /etc/sudoers.d
-printf '%s ALL=(ALL) NOPASSWD: ALL\n' "$name" > "/etc/sudoers.d/$name"
-chmod 0440 "/etc/sudoers.d/$name"
+for g in "${!wanted[@]}"; do
+    # Absent means the declaring package isn't installed yet; the next
+    # boot retries.
+    getent group "$g" >/dev/null 2>&1 || continue
+    # Pure-bash membership test — an `id -nG | grep -q` pipeline can
+    # SIGPIPE its producer under pipefail.
+    case " $(id -nG "$name" 2>/dev/null) " in
+        *" $g "*) ;;
+        *)
+            gpasswd -a "$name" "$g" >/dev/null
+            echo "user-setup: added ${name} to ${g}" >&2
+            ;;
+    esac
+done
 
-# APPEND (>>) — /etc/subuid may already carry ranges we must keep
-# (e.g. a root range for rootful-inside-rootless podman setups).
-# The grep guard keeps re-runs from duplicating the user's line.
-grep -q "^${name}:" /etc/subuid 2>/dev/null || echo "${name}:100000:65536" >> /etc/subuid
-grep -q "^${name}:" /etc/subgid 2>/dev/null || echo "${name}:100000:65536" >> /etc/subgid
+# Linger, so user@<uid>.service and /run/user/<uid> exist WITHOUT a
+# prior PAM login: nested rootless podman (`podman exec -u <user>`)
+# fails with "RunRoot ... is not writable" without that runtime dir.
+#
+# Both halves on purpose. The marker file is what logind reads when it
+# scans at startup, so it covers the case where this script wins the
+# race; `loginctl` covers the opposite one by telling a RUNNING logind
+# to act now (the unit orders us After=systemd-logind.service, so that
+# is the normal path). Best-effort: a box whose logind is down still
+# gets a working account, just without linger until the next boot.
+install -d -m 0755 /var/lib/systemd/linger
+: > "/var/lib/systemd/linger/$name"
+loginctl enable-linger "$name" >/dev/null 2>&1 || true

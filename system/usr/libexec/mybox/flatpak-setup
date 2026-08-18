@@ -1,7 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Add flathub as a system-wide remote. Idempotent — runs once at
-# first boot via flatpak-setup.service, marker-gated under
-# /var/lib/mybox/.marks/.
+# Add flathub as a system-wide remote. Idempotent — runs at first boot
+# via flatpak-setup.service, marker-gated under /var/lib/mybox/.marks/.
+#
+# The marker is stamped HERE, as the last step, so it exists only when
+# the remote was really registered: the unit runs us with ExecStart=-
+# (an offline boot must not mark the system degraded) and would
+# otherwise have no way to tell success from failure.
+MARK=/var/lib/mybox/.marks/flatpak-setup.done
+
 flatpak remote-add --if-not-exists --system flathub \
     https://flathub.org/repo/flathub.flatpakrepo
+
+mkdir -p "${MARK%/*}"
+touch "$MARK"

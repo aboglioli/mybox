@@ -27,14 +27,18 @@ mybox/
         ├── lib/systemd/         # units, presets, target drop-ins
         ├── libexec/mybox/       # boot scripts (seed, overlay, user-setup, …)
         ├── local/bin/mybox      # in-container CLI dispatcher
-        └── share/mybox/just/    # in-container recipes (install-nvidia, …)
+        └── share/mybox/
+            ├── just/            # in-container recipes (install-nvidia, …)
+            └── user-groups.d/   # extra groups for the runtime user
 ```
 
 ## Root model
 
 Immutable image + writable state. The container is deliberately
 disposable — quadlet removes and recreates it on every stop/restart/
-boot; nothing of value lives inside it:
+boot; nothing of value lives inside it. The four binds below are part
+of `mybox.container` itself and are **mandatory**, created on demand by
+its `ExecStartPre=`:
 
 | Host path | In container | Mechanism |
 |---|---|---|
@@ -44,6 +48,14 @@ boot; nothing of value lives inside it:
 | `/srv/<name>/srv` | `/srv` | `:idmap` bind, starts empty — service data for nested quadlets |
 | `/srv/<name>/home` | `/home` | `:idmap` bind (whole `/home`; the runtime user is created inside by `useradd -m`) |
 | `/srv/<name>/container.env` | env for PID 1 | optional `MYBOX_*` runtime config |
+
+Not optional because the `/usr` overlay's upperdir has to sit on a real
+filesystem — the kernel refuses overlayfs as an upperdir, so a
+container without the `/var` bind gets a read-only `/usr`: no pacman,
+no NVIDIA userland. Everything derives from the unit name via `%p`, so
+a second instance is just `mybox-test.container` → `/srv/mybox-test`,
+created on first start and `rm -rf`'d when you are done with it. There
+are no ephemeral containers, only cheap ones.
 
 Inside the container, `/usr` + `/opt` are an overlay whose upperdir
 lives in `/var` (`mybox-usr-overlay.service`) — pacman installs and the
@@ -93,13 +105,16 @@ the unit's `[Install]` section, so one `just start` survives reboots.
 
 Justfile knobs (env vars): `MYBOX_IMAGE`, `MYBOX_CONTAINER`,
 `MYBOX_USERNAME`, `MYBOX_NETFILE`, `MYBOX_DROPINS`. Everything else —
-network, GUI, GPU, devices, capabilities, persistence, runtime user —
-is a drop-in in `container/` (see `container/README.md`).
+network, GUI, GPU, devices, capabilities, runtime user — is a drop-in
+in `container/` (see `container/README.md`). Persistence is not: it is
+part of `mybox.container` and always on.
 
 ## Runtime user + SSH keys
 
 The image bakes NO user. `mybox-user-setup.service` creates one at boot
-from env (defaults `user` / 1000 / 1000 / fish):
+from env — with no env at all you still get a default user
+(`user` / 1000 / 1000 / fish), which is what makes replicating the host
+account a one-liner (`MYBOX_UID` = your host uid):
 
 ```
 MYBOX_USER / MYBOX_UID / MYBOX_GID / MYBOX_SHELL
@@ -114,13 +129,25 @@ that alongside `~/.ssh/authorized_keys`. Local alternative — bind-mount
 a host file instead:
 
 ```
-Volume=/srv/mybox/authorized_keys:/etc/ssh/authorized_keys.d/user:ro
+Volume=/srv/mybox/authorized_keys:/etc/ssh/authorized_keys.d/<user>:ro
 ```
 
 sshd listens on **port 2222** (port 22 belongs to the host sshd when
 `Network=host`; kept consistent across all network modes). Auth is
 pubkey-only; the runtime user has an empty password (console/`podman
 exec` entry only) and NOPASSWD sudo.
+
+**Creation is one-shot, group binding is every boot.** The account is
+created once (and skipped when `MYBOX_UID` is already owned by someone
+else — group binding then retargets to the actual owner, so a renamed
+`MYBOX_USER` over a persistent `/etc` can never wedge the unit).
+Supplementary groups are re-applied on every start: `wheel video render
+input audio kvm libvirt` plus anything listed in
+`/usr/share/mybox/user-groups.d/*.conf`. That is what makes a package
+installed later into the `/usr` overlay (libvirt, docker) reach the user
+without a manual `usermod` — its group exists at the next boot and gets
+bound then. Variant images add their own groups by shipping a file in
+that directory instead of patching the script (see its `README`).
 
 ## Network options (pick ONE .network file)
 
@@ -175,6 +202,19 @@ trees. With a persistent bind, the host-side `ExecStartPre` pre-seed
 once from the factory; a populated bind is never overwritten. Factory
 reset = `rm -rf /srv/<name>/{etc,var}` while stopped.
 
+**Upgrade corollary — enablement does not re-sync.** A newer image that
+enables a unit ships that symlink in its FACTORY `/etc`, and a
+populated bind is never re-seeded, so an existing box keeps whatever it
+was seeded with. `/etc` is yours after the first boot, bootc/ostree
+style. After a rebase that changed what is enabled, reconcile by hand:
+
+```bash
+diff -qr /etc/systemd /usr/share/factory/etc/systemd | grep -i wants
+```
+
+and `systemctl enable` / `systemctl --global enable` what is missing,
+removing symlinks left dangling by units the new image dropped.
+
 The pacman db is NOT part of the persistent `/var`: it lives inside
 the image at `/usr/lib/pacman` (SteamOS-style; `/var/lib/pacman` is a
 tmpfiles-managed symlink). Db and files travel through the same `/usr`
@@ -185,27 +225,55 @@ install dies on "conflicting files"). Corollary: in-place upgrades of
 image-shipped packages shadow the image until the overlay diff is
 reset; prefer rebasing the image over upgrading it from inside.
 
-## Enabling units: `Wants=`, not `Upholds=`
+## Enabling units: plain `enable`, no target drop-ins
 
-`Upholds=` re-asserts "keep active" every time a unit goes inactive, so
-it busy-loops two shapes: `Type=oneshot` + `RemainAfterExit=no`, and
-**any unit with a failable `Condition*=`** (a skipped start counts as
-inactive). Most mybox units self-gate on conditions, so they are wired
-with `Wants=`; `Upholds=` is reserved for units that stay active once
-started (sockets, daemons, `RemainAfterExit=yes` oneshots — see the
-`sockets.target.d` drop-ins). The busy-loop is not theoretical: one
-mis-wired condition unit produced 27,380 restarts in 4.8 h.
+mybox has no sysexts and no late-merged `/usr`, so units are enabled
+the ordinary way and nothing needs `Wants=`/`Upholds=` drop-ins to
+paper over a missing one:
 
-**Late-arriving units** (the `/usr` overlay corollary): PID 1 freezes
-the boot job graph at startup, before `mybox-usr-overlay.service`
-mounts at sysinit. A service installed INTO the overlay (`pacman -S`)
-and enabled via `/etc` symlinks is therefore a dangling `Wants=` at the
-next boot — dropped with a warning, never revisited, even after the
-daemon-reload that follows the mount. Every unit mybox ships is baked
-into the image, so this only affects overlay-installed services. Wire
-those through activation that arrives as a post-mount event (`.socket`,
-`.path`, `.timer`, D-Bus) or an `Upholds=` drop-in on a stay-active
-unit; a plain enable needs one manual `systemctl start` per boot.
+| What | Where it is enabled |
+|---|---|
+| system units | `50-mybox.preset` → `systemctl preset-all` at build → symlinks in `/etc`, snapshotted into the factory tree |
+| user units (all sessions) | `systemctl --global enable` at build → `/etc/systemd/user/…`, same snapshot |
+| `mybox-{etc,var}-seed`, `mybox-usr-overlay` | static `.wants` symlinks under `/usr/lib/systemd/system/sysinit.target.wants/` |
+
+The last row is the one exception, and the reason is the ordering: a
+preset writes into `/etc`, and those three units are exactly the ones
+that must run when `/etc` is an unseeded empty bind. Shipping their
+enable symlink in `/usr` makes them independent of it. Everything else
+reaches the first boot because the quadlet's `ExecStartPre=` seeds
+`/etc` from the factory tree HOST-side, before PID 1 ever reads it.
+
+**`Upholds=` is not a stronger `Wants=`** — it re-asserts "keep active"
+every time a unit goes inactive, so it busy-loops on `Type=oneshot` +
+`RemainAfterExit=no` and on **any unit with a failable `Condition*=`**
+(a skipped start counts as inactive). Not theoretical: in the sibling
+myosi project one mis-wired condition unit produced 27,380 restarts in
+4.8 h. It has a legitimate use — re-asserting a unit that arrives after
+the boot transaction is frozen, which is what a sysext merge does — and
+that is precisely the situation mybox does not have.
+
+**Where a service comes from decides whether `enable` sticks.** A unit
+baked into the IMAGE lives in the pristine `/usr` lower, readable by
+PID 1 from the first instant of boot, so `systemctl enable` behaves
+exactly as it does anywhere else. A unit installed at RUNTIME
+(`pacman -S` inside) lands in the `/usr` overlay upperdir, which is not
+mounted until `mybox-usr-overlay.service` runs at sysinit — after PID 1
+froze the boot job graph. Its enable symlink is a dangling reference
+that boot drops with a warning, so it needs one `systemctl start` per
+boot.
+
+That is a property of the overlay, not a bug to route around, and it
+maps cleanly onto how you are meant to use the two: **install at
+runtime to try something, bake a variant image to keep it.** Layer a
+`Containerfile` on `FROM ghcr.io/aboglioli/mybox`, `pacman -S` there,
+`systemctl enable` there, and the unit is in `/usr` at boot like any
+other. This is also why nothing optional (libvirt sockets, pipewire,
+gnome-keyring) is wired in the base image: a drop-in naming
+`virtqemud.socket` is evaluated on EVERY box, so one without libvirt
+logs `Unit not found` per unit per boot and carries them forever in
+`systemctl list-units --state=not-found` — 19 phantom units for libvirt
+alone.
 
 ## In-container CLI
 

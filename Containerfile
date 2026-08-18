@@ -57,12 +57,43 @@ RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
 
 # Wire units via 50-mybox.preset; pre-create machine-id so first boot
 # doesn't generate one (would fail under a persistent /var overlay).
+#
+# --global enable is the user-scope equivalent: it writes symlinks into
+# /etc/systemd/user/, which the factory snapshot below carries, so every
+# session gets them with no per-user `systemctl --user enable`. Listed
+# explicitly rather than via `--global preset-all`, which pulls in the
+# whole vendor set (podman.service, podman-auto-update.timer, p11-kit…)
+# that this image deliberately leaves off.
+#
+#   podman.socket / podman-restart.service  rootless API socket +
+#       resume of the user's --restart=always containers after a boot
+#   mybox-host-sockets / mybox-xwayland     GUI wiring; both self-gate
+#       on Condition= so they are clean no-ops in a headless container
+#
+# pipewire.socket is DISABLED for the opposite reason. pipewire arrives
+# as a dependency and its package enables the socket globally, but the
+# usual mybox GUI (10-gui.conf) is a CLIENT of the host's pipewire: the
+# host sockets are bind-mounted at /mnt/host and linked into
+# XDG_RUNTIME_DIR, and a nested daemon racing to create its own
+# pipewire-0 there shadows them — silence, intermittently. A
+# compositor-INSIDE container (50-desktop.conf) enables it explicitly.
+#
+# systemd-sysusers runs HERE, at build time, so the users and groups
+# mybox declares land in the factory /etc that every box is seeded
+# from. Leaving it to boot does not work: systemd-sysusers.service
+# carries ConditionNeedsUpdate=/etc and is condition-skipped on a
+# persistent /etc, so the accounts would silently never appear (the
+# symptom was tmpfiles failing on "Unknown user 'qemu'" every boot).
 RUN systemctl preset-all && \
+    systemctl --global enable podman.socket podman-restart.service \
+                              mybox-host-sockets.service mybox-xwayland.service && \
+    systemctl --global disable pipewire.socket pipewire.service && \
+    systemd-sysusers && \
     systemd-machine-id-setup
 
-# User linger is enabled at RUNTIME by mybox-linger.service — a
-# build-time /var/lib/systemd/linger marker is dropped by logind's
-# StateDirectory re-provisioning.
+# User linger is enabled at RUNTIME by mybox-user-setup (it knows the
+# configured user name) — a build-time /var/lib/systemd/linger marker
+# cannot, and is dropped by logind's StateDirectory re-provisioning.
 
 # Mask host-kernel/hardware units preset can only disable.
 RUN for u in \

@@ -2,7 +2,7 @@
 # the container is composed lives in mybox.container + container/*.conf;
 # this file only builds, installs the unit files and gets you a shell.
 # The container is disposable (recreated on every restart/boot); state
-# persists via the 01/02/03-persist-*.conf drop-ins under /srv/<name>.
+# persists under /srv/<name> via the binds in mybox.container itself.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
@@ -23,9 +23,11 @@ mybox_username := env_var_or_default("MYBOX_USERNAME", "user")
 
 mybox_netfile := env_var_or_default("MYBOX_NETFILE", "mybox-bridge.network")
 
-# Default drop-in set for `just install`. 31-nvidia-raw vs 30-nvidia
-# (CDI): pick exactly ONE — both would pass the devices twice.
-mybox_dropins := env_var_or_default("MYBOX_DROPINS", "01-persist-root 02-persist-home 03-persist-srv 05-user 10-gui 20-gpu 31-nvidia-raw")
+# Default drop-in set for `just install`. Persistence is NOT here —
+# /srv/<name>/{etc,var,home,srv} is part of mybox.container itself and
+# cannot be opted out of. 31-nvidia-raw vs 30-nvidia (CDI): pick
+# exactly ONE — both would pass the devices twice.
+mybox_dropins := env_var_or_default("MYBOX_DROPINS", "05-user 10-gui 20-gpu 31-nvidia-raw")
 
 quadlet_dir := "/etc/containers/systemd"
 unit := mybox_name + ".service"
@@ -42,7 +44,7 @@ build:
 # Symlink quadlet + network + drop-ins into /etc/containers/systemd.
 # Symlinks (not copies) so repo edits apply on the next daemon-reload.
 # Name drop-ins to override the default set:
-#   just install 01-persist-root 05-user 10-gui 31-nvidia-raw
+#   just install 05-user 10-gui 31-nvidia-raw
 install *dropins:
     #!/usr/bin/env bash
     set -euo pipefail

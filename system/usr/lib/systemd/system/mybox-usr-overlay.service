@@ -8,8 +8,10 @@
 # early units keep their open files (same lower inodes); everything
 # started later resolves through the overlay.
 #
-# Ephemeral runs (no /var bind): still mounts, upper just lives in
-# the container layer and dies with it — harmless and uniform.
+# Requires the /var host bind that mybox.container makes mandatory:
+# the kernel refuses overlayfs as an upperdir, so without it the mount
+# fails and /usr stays read-only. The script says so and exits 1
+# rather than degrading silently.
 
 [Unit]
 Description=Writable /usr + /opt overlay (upperdir in /var)

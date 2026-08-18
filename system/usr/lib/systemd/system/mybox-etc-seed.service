@@ -4,7 +4,7 @@
 # from an image upgrade do NOT propagate into a populated bind — /etc
 # reflects what the user put there, no auto-sync.
 #
-# The quadlet path pre-seeds host-side (01-persist-root.conf) because
+# The quadlet path pre-seeds host-side (mybox.container ExecStartPre) because
 # PID 1 reads /etc before any unit runs; this service is the fallback.
 
 [Unit]

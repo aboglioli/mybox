@@ -89,6 +89,18 @@ Inside, `/root` symlinks to `/var/roothome` and `/var/lib/pacman` to
 which podman mounts itself and which survives the `/var` overlay, so
 the journal stays RAM-backed and per-boot.
 
+**The pristine lower stays reachable.** Once an overlay is mounted its
+lower has no name left, so the pre-init publishes each one read-only at
+`/run/mybox/lower/<tree>` first. That is the actual lower rather than a
+copy of it, so "what has this box changed?" is answerable from inside
+and cannot drift from what the box is really layered on:
+
+```bash
+mybox diff          # /etc versus its lower — user db, ssh host keys, …
+mybox diff usr      # empty unless you installed something at runtime
+find /.mybox/etc/diff -type f    # same question, no content comparison
+```
+
 Factory reset is per tree and non-destructive to data:
 `rm -rf /srv/<name>/etc/diff` while stopped resets configuration and
 leaves `/home`, the flatpak apps and the container images alone.
@@ -297,6 +309,7 @@ justfile. Slot convention: 00-49 shipped, 50-99 local additions.
 | Recipe | What it does |
 |---|---|
 | `install-nvidia` | installs userland matching the host driver via the official `.run` (raw-device path; the CDI drop-in doesn't need it). Re-run after host driver upgrades |
+| `diff [tree]` | what this box changed in `/etc` (or `var`/`usr`/`opt`), compared against the overlay's real lower |
 
 ## NVIDIA
 

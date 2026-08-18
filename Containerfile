@@ -30,7 +30,7 @@ RUN pacman-key --init && \
         fish git just curl \
         eza bat ripgrep fzf fd zoxide starship \
         btop ncdu jq tree tmux neovim \
-        rsync unzip \
+        rsync unzip diffutils \
         podman crun fuse-overlayfs passt \
         netavark aardvark-dns \
         flatpak xdg-utils \

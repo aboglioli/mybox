@@ -33,6 +33,7 @@ set -uo pipefail
 
 STATE=/.mybox
 KEEP=/run/mybox-preinit
+LOWER=/run/mybox/lower
 TREES=(etc var usr opt)
 # Bulk payloads: raw binds punched back through the /var overlay. They are
 # not image-derived, they are large (GBs of images and flatpak apps), and a
@@ -63,6 +64,18 @@ for t in "${TREES[@]}"; do
         continue
     fi
     mkdir -p "$STATE/$t/diff" "$STATE/$t/work" || { log "cannot create $STATE/$t"; continue; }
+
+    # Publish the pristine tree read-only at $LOWER/<tree> BEFORE the
+    # overlay hides it. Once the overlay is mounted the lower has no name
+    # left, so "what has this box changed?" would otherwise be answerable
+    # only from the host. This is the real lower, not a copy of it, so the
+    # comparison cannot drift:  diff -rq /run/mybox/lower/etc /etc
+    mkdir -p "$LOWER/$t"
+    if mount --bind "/$t" "$LOWER/$t"; then
+        mount -o remount,bind,ro "$LOWER/$t" || log "$LOWER/$t stays writable"
+    else
+        log "cannot publish the pristine /$t at $LOWER/$t"
+    fi
     # userxattr: unprivileged whiteouts, required inside a user namespace.
     if ! mount -t overlay "mybox-$t" \
         -o "lowerdir=/$t,upperdir=$STATE/$t/diff,workdir=$STATE/$t/work,userxattr" "/$t"

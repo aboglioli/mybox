@@ -16,7 +16,7 @@
 # `systemctl daemon-reload && systemctl start mybox`. Quadlets cannot be
 # `enable`d — [Install] wires boot via the generator.
 #
-# Lifecycle (with 01-persist-root.conf):
+# Lifecycle:
 #   config change   edit drop-in → daemon-reload → restart (state kept)
 #   image rebase    rebuild/pull image → restart
 #   factory reset   stop → rm -rf /srv/<name>/{etc,var} → start
@@ -31,7 +31,7 @@ ContainerName=%p
 HostName=%p
 # Published from CI on release tags (YYYY.MM.DD[.XX]); :latest tracks
 # the newest release and lets AutoUpdate=registry roll forward. Pin a
-# date tag here (and in 01-persist-root.conf) to freeze. Local dev:
+# date tag here (and in the seed ExecStartPre below) to freeze. Local dev:
 # `just build` tags a local build over this same reference.
 Image=ghcr.io/aboglioli/mybox:latest
 Exec=/sbin/init

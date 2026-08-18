@@ -15,9 +15,8 @@
 # Requires `xorg-xwayland` + `xwayland-satellite` installed; the
 # Conditions keep it a clean no-op when the binary or the host socket
 # is absent — without the binary check, Restart=on-failure busy-loops
-# on EXEC every RestartSec forever. Autostarted by the user
-# default.target drop-in (Wants= — a condition-skipped start leaves the
-# unit inactive, which Upholds= would retry forever).
+# on EXEC every RestartSec forever. Enabled for every session by
+# `systemctl --global enable` at image build time.
 [Unit]
 Description=Xwayland inside the container (host :0 is unreachable)
 ConditionPathExistsGlob=/mnt/host/wayland-*

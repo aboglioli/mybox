@@ -4,10 +4,9 @@
 # rationale (logind wipes /run/user at login, so the runtime binds land
 # at /mnt/host and we relink them here, per user session).
 #
-# Autostarted by the user default.target drop-in (Wants= — the
-# Condition below makes a no-host-binds start inactive, which Upholds=
-# would retry forever). No-op with no host binds (compositor-inside /
-# headless).
+# Enabled for every session by `systemctl --global enable` at image
+# build time. The Condition below makes it a clean no-op when no host
+# sockets are bound (compositor-inside / headless).
 [Unit]
 Description=Link host GUI/audio sockets into XDG_RUNTIME_DIR
 ConditionPathExistsGlob=/mnt/host/*

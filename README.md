@@ -162,9 +162,11 @@ MYBOX_USER / MYBOX_UID / MYBOX_GID / MYBOX_SHELL
 MYBOX_AUTHORIZED_KEYS      comma-separated ssh keys
 ```
 
-Set them via `05-user.conf` `Environment=` lines,
-`EnvironmentFile=/srv/<name>/container.env` (see
-`container.env.example`), or `-e` flags. `MYBOX_AUTHORIZED_KEYS` is
+Set them in `/srv/<name>/container.env`, which the quadlet loads and
+creates empty on first start — per instance, no wiring (see
+`container.env.example`). A `*.container.d` drop-in's `Environment=`
+overrides it, which is why the shipped `05-user.conf` keeps its lines
+commented. `MYBOX_AUTHORIZED_KEYS` is
 synced every boot to `/etc/ssh/authorized_keys.d/<user>`; sshd reads
 that alongside `~/.ssh/authorized_keys`. Local alternative — bind-mount
 a host file instead:

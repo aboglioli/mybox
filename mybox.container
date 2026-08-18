@@ -95,6 +95,18 @@ Tmpfs=/var/tmp
 # Factory reset: stop → sudo rm -rf /srv/<name>/{etc,var}/diff → start,
 # which resets configuration WITHOUT touching /home or the bulk payloads.
 # Throwaway instance: give it its own name, delete /srv/<name> after.
+# Per-instance runtime config, read HOST-side at start and handed to the
+# container's env, where PID 1 carries it to mybox-user-setup. This is the
+# natural home for what differs BETWEEN boxes — the login name, uid, ssh
+# keys — because it lives with the instance's state rather than in the
+# repo: mybox-1 and mybox-2 each get their own.
+#
+# The ExecStartPre below creates it empty, and that is load-bearing:
+# podman fails the whole start on a missing --env-file. Anything set with
+# Environment= in a drop-in OVERRIDES this file, so the shipped
+# 05-user.conf leaves its lines commented.
+EnvironmentFile=/srv/%p/container.env
+
 Volume=/srv/%p:/.mybox:idmap
 Volume=/srv/%p/home:/home:idmap
 Volume=/srv/%p/srv:/srv:idmap
@@ -136,6 +148,8 @@ TimeoutStartSec=600
 # so an empty upper is a complete /etc, and a newer image's changes show
 # through instead of being frozen at whatever was copied once.
 ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc /srv/%p/var /srv/%p/usr /srv/%p/opt /srv/%p/home /srv/%p/srv
+# EnvironmentFile= above is fatal when absent, so guarantee it exists.
+ExecStartPre=/usr/bin/touch /srv/%p/container.env
 
 [Install]
 WantedBy=multi-user.target

@@ -17,7 +17,7 @@ instance gets its own unit name — `mybox-test.container` →
 
 | File | Adds |
 |---|---|
-| `05-user.conf` | runtime login user + ssh keys: `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` env (or `EnvironmentFile=/srv/<name>/container.env`) |
+| `05-user.conf` | template for pinning `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` in the repo — all commented, since per-box identity belongs in `/srv/<name>/container.env`, which the quadlet loads already |
 | `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env |
 | `20-gpu.conf` | `/dev/dri`, `/dev/snd`, `/dev/input` (Intel/AMD stack) |
 | `30-nvidia.conf` | `AddDevice=nvidia.com/gpu=all` via CDI (no in-container install needed) |

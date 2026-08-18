@@ -1,0 +1,26 @@
+Extra supplementary groups for the runtime user.
+
+Drop a `<feature>.conf` here listing one group name per line (`#`
+starts a comment). On every boot mybox-user-setup.service unions these
+with its base set (wheel video render input audio kvm libvirt) and
+`gpasswd -a`s the runtime user into each group that EXISTS at that
+moment; groups whose package is not installed are skipped silently and
+retried next boot.
+
+Why a drop-in dir instead of editing user-setup: a layered variant
+image (`FROM ghcr.io/aboglioli/mybox:<tag>`) that installs docker,
+wireshark or plugdev-owning packages ships its own file here and needs
+no patch to the base script. Same reason the packages themselves land
+in the /usr overlay rather than the image.
+
+Slot convention matches /usr/share/mybox/just/: 00-49 shipped, 50-99
+local additions.
+
+Example — /usr/share/mybox/user-groups.d/50-docker.conf:
+
+    # rootful docker socket access inside the container
+    docker
+
+Binding is add-only: removing a file here does not strip the
+membership from /etc/group. Prune it by hand (`gpasswd -d <user>
+<group>`) if that matters.

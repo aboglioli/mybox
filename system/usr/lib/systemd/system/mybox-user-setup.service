@@ -1,20 +1,26 @@
 # Create the login user at boot from MYBOX_USER / MYBOX_UID /
-# MYBOX_GID / MYBOX_SHELL env vars (podman env → PID 1 → units).
+# MYBOX_GID / MYBOX_SHELL env vars (podman env → PID 1 → this script).
 # The image bakes NO user — one generic image serves any box; each
 # container names its user at runtime (quadlet Environment= drop-in,
-# EnvironmentFile=/srv/<name>/container.env, or `-e` flags).
+# EnvironmentFile=/srv/<name>/container.env, or `-e` flags). `user` is
+# only the default when nothing is set.
 #
-# Idempotent: exits immediately when the user already exists. With the
-# persistent root overlay the user record lives in the upperdir, so
-# this effectively runs once per rootfs lifetime.
+# This script leaves the account fully usable: account + primary group,
+# home, empty password, NOPASSWD sudo, subuid/subgid range,
+# supplementary groups, ssh authorized_keys, /srv/users/<uid> and
+# linger. Creation is one-shot (it exits early when the account already
+# exists in the persistent /etc); everything that can change underneath
+# it — groups, keys, linger — is re-applied on every boot.
 #
-# Ordering: before systemd-user-sessions (gates logins), sshd (key
-# lookup needs the account) and mybox-linger (lingers this user).
+# Ordering: after logind and dbus so `loginctl enable-linger` reaches a
+# running logind; before systemd-user-sessions (gates logins) and sshd
+# (key lookup needs the account). After= only, so a failed dbus does
+# not stop the account from being created.
 [Unit]
 Description=Create the runtime-configured login user
 Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
-After=local-fs.target mybox-etc-seed.service
-Before=systemd-user-sessions.service sshd.service mybox-linger.service
+After=local-fs.target mybox-etc-seed.service systemd-logind.service dbus.service
+Before=systemd-user-sessions.service sshd.service
 ConditionVirtualization=container
 
 [Service]

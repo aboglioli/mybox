@@ -60,9 +60,9 @@ RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
 RUN systemctl preset-all && \
     systemd-machine-id-setup
 
-# User linger is enabled at RUNTIME by mybox-linger.service — a
-# build-time /var/lib/systemd/linger marker is dropped by logind's
-# StateDirectory re-provisioning.
+# User linger is enabled at RUNTIME by mybox-user-setup (it knows the
+# configured user name) — a build-time /var/lib/systemd/linger marker
+# cannot, and is dropped by logind's StateDirectory re-provisioning.
 
 # Mask host-kernel/hardware units preset can only disable.
 RUN for u in \

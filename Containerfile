@@ -5,11 +5,12 @@
 # image serves any box; mybox-user-setup.service creates the user at
 # boot from MYBOX_* env (see container/05-user.conf).
 #
-# /etc factory pattern: pacman populates /etc, system/etc overlays our
-# drop-ins, then the final RUN snapshots /etc and /var to
-# /usr/share/factory/{etc,var}. The default container runs straight from
-# the live trees; mybox-{etc,var}-seed.service repopulate a persistent
-# bind only when it is mounted empty.
+# The image's /etc and /var are the LOWER layers of the overlays that
+# /usr/libexec/mybox/preinit assembles at boot, so they are the live
+# content of every box rather than a template to copy — nothing seeds
+# anything. /usr/share/factory/{etc,var} is still snapshotted because
+# systemd's own tmpfiles.d copies from it, and it stays a useful
+# reference to diff a box against.
 
 FROM docker.io/archlinux:base
 
@@ -29,7 +30,7 @@ RUN pacman-key --init && \
         fish git just curl \
         eza bat ripgrep fzf fd zoxide starship \
         btop ncdu jq tree tmux neovim \
-        rsync unzip \
+        rsync unzip diffutils \
         podman crun fuse-overlayfs passt \
         netavark aardvark-dns \
         flatpak xdg-utils \
@@ -44,8 +45,9 @@ RUN pacman-key --init && \
 COPY system/etc /etc
 COPY system/usr /usr
 RUN chmod +x /usr/libexec/mybox/flatpak-setup /usr/libexec/mybox/link-host-sockets \
-             /usr/libexec/mybox/user-setup /usr/libexec/mybox/usr-overlay \
-             /usr/local/bin/mybox
+             /usr/libexec/mybox/preinit /usr/libexec/mybox/user-setup \
+             /usr/local/bin/mybox && \
+    mkdir -p /.mybox
 
 RUN locale-gen
 ENV LANG=en_US.UTF-8 \
@@ -79,11 +81,11 @@ RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
 # compositor-INSIDE container (50-desktop.conf) enables it explicitly.
 #
 # systemd-sysusers runs HERE, at build time, so the users and groups
-# mybox declares land in the factory /etc that every box is seeded
-# from. Leaving it to boot does not work: systemd-sysusers.service
-# carries ConditionNeedsUpdate=/etc and is condition-skipped on a
-# persistent /etc, so the accounts would silently never appear (the
-# symptom was tmpfiles failing on "Unknown user 'qemu'" every boot).
+# mybox declares are already in the /etc that every box overlays. The
+# overlay makes ConditionNeedsUpdate=/etc work again at runtime (the
+# new /usr lower postdates the upper's stamp), so this is now belt and
+# braces rather than the only path — but it keeps a first boot from
+# depending on that condition firing.
 RUN systemctl preset-all && \
     systemctl --global enable podman.socket podman-restart.service \
                               mybox-host-sockets.service mybox-xwayland.service && \

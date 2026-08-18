@@ -25,7 +25,7 @@ mybox/
     ├── etc/                     # → /etc (snapshotted to /usr/share/factory/etc)
     └── usr/                     # → /usr (immutable at runtime)
         ├── lib/systemd/         # units, presets, target drop-ins
-        ├── libexec/mybox/       # boot scripts (seed, overlay, user-setup, …)
+        ├── libexec/mybox/       # preinit (root assembly), user-setup, …
         ├── local/bin/mybox      # in-container CLI dispatcher
         └── share/mybox/
             ├── just/            # in-container recipes (install-nvidia, …)
@@ -34,44 +34,85 @@ mybox/
 
 ## Root model
 
-Immutable image + writable state. The container is deliberately
+Immutable image + writable state, one pattern everywhere: **every tree
+the image owns is an overlay of image-lower + host-upper, and every
+upper lives in a single host bind**. `/usr/libexec/mybox/preinit`
+assembles them as PID 1 and then execs systemd. The container is
 disposable — quadlet removes and recreates it on every stop/restart/
-boot; nothing of value lives inside it. The four binds below are part
-of `mybox.container` itself and are **mandatory**, created on demand by
-its `ExecStartPre=`:
+boot; nothing of value lives inside it.
 
-| Host path | In container | Mechanism |
+| Host | In container | Mechanism |
 |---|---|---|
-| (image) | `/`, `/usr` + `/opt` lower | pristine lower; rebuild + restart = instant rebase |
-| `/srv/<name>/etc` | `/etc` | `:idmap` bind, seeded once from `/usr/share/factory/etc` |
-| `/srv/<name>/var` | `/var` | `:idmap` bind, seeded once from `/usr/share/factory/var` — flatpak state, nested-podman storage, `/usr`+`/opt` diffs, root's home (pacman db rides `/usr`) |
-| `/srv/<name>/srv` | `/srv` | `:idmap` bind, starts empty — service data for nested quadlets |
-| `/srv/<name>/home` | `/home` | `:idmap` bind (whole `/home`; the runtime user is created inside by `useradd -m`) |
+| `/srv/<name>` | `/.mybox` | the one state bind — holds every overlay upper. Never itself overlaid |
+| `/srv/<name>/etc/diff` | `/etc` | overlay upper; **lower is the image's `/etc`** |
+| `/srv/<name>/var/diff` | `/var` | overlay upper; lower is the image's `/var` |
+| `/srv/<name>/usr/diff` | `/usr` | overlay upper; lower is the image's `/usr` — pacman installs, NVIDIA userland |
+| `/srv/<name>/opt/diff` | `/opt` | overlay upper |
+| `/srv/<name>/var/lib/containers` | `/var/lib/containers` | raw bind punched back through the `/var` overlay |
+| `/srv/<name>/var/lib/flatpak` | `/var/lib/flatpak` | raw bind, same reason |
+| `/srv/<name>/home` | `/home` | raw bind — user data, no image content to layer |
+| `/srv/<name>/srv` | `/srv` | raw bind, empty by contract — nested-quadlet service data |
 | `/srv/<name>/container.env` | env for PID 1 | optional `MYBOX_*` runtime config |
 
-Not optional because the `/usr` overlay's upperdir has to sit on a real
-filesystem — the kernel refuses overlayfs as an upperdir, so a
-container without the `/var` bind gets a read-only `/usr`: no pacman,
-no NVIDIA userland. Everything derives from the unit name via `%p`, so
-a second instance is just `mybox-test.container` → `/srv/mybox-test`,
-created on first start and `rm -rf`'d when you are done with it. There
-are no ephemeral containers, only cheap ones.
+**Nothing is seeded.** The image tree *is* the lower, so an empty upper
+is already a complete `/etc` — 116 entries on first boot. The seed
+services and the host-side seed containers are gone, and so is their
+worst property: a newer image's `/etc` changes now reach an existing
+box instead of being frozen at whatever was copied once. Files you edit
+copy up and keep winning; files you never touched track the image.
 
-Inside the container, `/usr` + `/opt` are an overlay whose upperdir
-lives in `/var` (`mybox-usr-overlay.service`) — pacman installs and the
-NVIDIA userland persist. `/root` symlinks to `/var/roothome`. `/run`,
-`/tmp`, `/var/tmp` are tmpfs, wiped every start. Writes outside
-`/etc /var /srv /home /usr /opt /root` die with the recreation — that
-is the immutable-root contract.
+**Why one state bind rather than an upper inside each tree.** The kernel
+refuses overlayfs as an upperdir, so an upper cannot live under a tree
+that is itself overlaid — putting `/usr`'s upper in `/var/lib/mybox`
+stops working the instant `/var` becomes an overlay. A bind that is
+never overlaid removes the ordering problem entirely: there is no tree
+that must be mounted before the thing holding its own upper. (This is
+the chicken-and-egg that kept `/etc` a plain mount in sibling myosi,
+where no such host bind exists before PID 1.)
 
-Why the `/usr` overlay is mounted from INSIDE instead of podman's own
-`Volume=vol:/:O,upperdir=…`: that path is broken under `--userns=auto`
-([podman#23211](https://github.com/containers/podman/issues/23211)),
-and downgrading the userns would gut the isolation model. First boot of
-an empty `/etc` bind is pre-seeded HOST-side by an `ExecStartPre`
-throwaway container (PID 1 reads machine-id + preset/mask symlinks
-before any in-container unit could seed them); the in-container
-`mybox-{etc,var}-seed.service` remain as fallback.
+**Why a pre-init and not a unit.** PID 1 reads `/etc` — machine-id,
+preset symlinks, masks — before any unit can run, so an `/etc` overlay
+mounted by a service is already too late. The pre-init mounts everything
+and `exec`s systemd, which keeps it PID 1. It is the initrd pattern
+without the initrd; podman still treats the container as a systemd one
+because `--systemd=always` is explicit.
+
+**Bulk payloads are raw binds, not overlay content.** Nested podman
+storage and flatpak apps are gigabytes, are not image-derived, and must
+not vanish on a factory reset of `/var` — so the pre-init binds them
+back over the overlay. podman cannot do it for us: anything it mounts
+under `/var` is shadowed the moment `/var` is overlaid.
+
+Inside, `/root` symlinks to `/var/roothome` and `/var/lib/pacman` to
+`/usr/lib/pacman`, so both ride their tree's overlay. `/run`, `/tmp`,
+`/var/tmp` are tmpfs, wiped every start — as is `/var/log/journal`,
+which podman mounts itself and which survives the `/var` overlay, so
+the journal stays RAM-backed and per-boot.
+
+**Tooling outside the container sees the IMAGE's `/etc`, not yours.** The
+overlays exist only inside the container's mount namespace, so anything
+resolving from the host side reads the pristine image tree. The one place
+that bites is `podman exec -u <name>`, which looks the name up in the
+image's `/etc/passwd` — where the runtime user deliberately does not
+exist — and fails with `unable to find user`. `podman exec -u 1000`
+works, and `just enter` resolves the name inside with `runuser`. Anything
+running *in* the container (sshd, login, su, systemd) is unaffected.
+
+**The pristine lower stays reachable.** Once an overlay is mounted its
+lower has no name left, so the pre-init publishes each one read-only at
+`/run/mybox/lower/<tree>` first. That is the actual lower rather than a
+copy of it, so "what has this box changed?" is answerable from inside
+and cannot drift from what the box is really layered on:
+
+```bash
+mybox diff          # /etc versus its lower — user db, ssh host keys, …
+mybox diff usr      # empty unless you installed something at runtime
+find /.mybox/etc/diff -type f    # same question, no content comparison
+```
+
+Factory reset is per tree and non-destructive to data:
+`rm -rf /srv/<name>/etc/diff` while stopped resets configuration and
+leaves `/home`, the flatpak apps and the container images alone.
 
 ## Quick start
 
@@ -121,9 +162,11 @@ MYBOX_USER / MYBOX_UID / MYBOX_GID / MYBOX_SHELL
 MYBOX_AUTHORIZED_KEYS      comma-separated ssh keys
 ```
 
-Set them via `05-user.conf` `Environment=` lines,
-`EnvironmentFile=/srv/<name>/container.env` (see
-`container.env.example`), or `-e` flags. `MYBOX_AUTHORIZED_KEYS` is
+Set them in `/srv/<name>/container.env`, which the quadlet loads and
+creates empty on first start — per instance, no wiring (see
+`container.env.example`). A `*.container.d` drop-in's `Environment=`
+overrides it, which is why the shipped `05-user.conf` keeps its lines
+commented. `MYBOX_AUTHORIZED_KEYS` is
 synced every boot to `/etc/ssh/authorized_keys.d/<user>`; sshd reads
 that alongside `~/.ssh/authorized_keys`. Local alternative — bind-mount
 a host file instead:
@@ -151,16 +194,47 @@ that directory instead of patching the script (see its `README`).
 
 ## Network options (pick ONE .network file)
 
-| File | Driver | LAN reach | Requires |
-|---|---|---|---|
-| `mybox-bridge.network` | joins existing `br0` | ✅ real LAN IP, host-reachable | `br0` on host |
-| `mybox-macvlan.network` | macvlan on physical NIC | ✅ own LAN IP (host can't reach it) | NIC not enslaved, wired |
-| `mybox-managed.network` | podman bridge + NAT | ⚠️ via `PublishPort=` | works anywhere |
-| (none, `Network=host`) | host netns | ✅ host's IP, sshd at `<host>:2222` | works anywhere |
+Two shapes, and they answer different questions:
 
-Switch via drop-in: `Network=` (empty) + new value. Pin the address
-across recreations with `80-static-ip.conf` (static IPAM) or
-`81-static-mac.conf` (stable DHCP lease).
+| File | What the container is | Reaching it |
+|---|---|---|
+| `mybox-nat.network` (default) | a private address behind the host's NAT | host talks to it directly; the LAN only through `PublishPort=` |
+| `mybox-lan.network` | **its own host on your LAN**, own MAC and DHCP lease | any machine on the LAN, directly — except the host itself |
+
+**NAT** assumes nothing about your network, so it works on wifi, on a
+roaming laptop, in CI. Inbound needs published ports; `85-publish-ssh.conf`
+is in the default drop-in set and maps the container's sshd to
+`<host>:2222`. Copy that file's shape for anything else you serve.
+
+**LAN** is macvlan: the router sees a separate machine and hands it its
+own address, so nothing needs publishing — the VM-like model. It needs a
+**wired** NIC not enslaved to a bridge, `netavark-dhcp-proxy.socket`
+enabled on the host, and `parent=` set to your LAN NIC
+(`ip -o route get 1.1.1.1 | awk '{print $5}'`). Its one hard limit is a
+kernel rule, not a mybox choice: **the host and the container cannot talk
+to each other** over macvlan. Everything else on the LAN can. Drop
+`85-publish-ssh.conf` when using it.
+
+Switch with `MYBOX_NETFILE=mybox-lan.network just install`, then
+`just restart`. Pin the address across recreations with
+`80-static-ip.conf` (static IPAM) or `81-static-mac.conf` (stable DHCP
+lease).
+
+Neither file pins a subnet. podman allocates a free range per host,
+which is what keeps them reusable: a hardcoded range fails outright on a
+host where something else already holds it (`subnet … is already used on
+the host or by another config`) and the container never starts. The
+allocation is stable anyway — the network object outlives container
+recreations. Pin `Subnet=`/`Gateway=` only when something outside podman
+needs the range up front, and accept that the file stops being
+host-agnostic.
+
+**Editing a `.network` file is not enough on its own.** Quadlet creates
+the podman network object only when it is missing and never reconciles an
+existing one against the file, so an edit — or a switch that reuses the
+name — silently keeps the old object, and the container lands on a subnet
+the file no longer mentions. `just net-reset` deletes it so the next start
+rebuilds it from the file.
 
 ## Security posture
 
@@ -178,7 +252,7 @@ host root:
 | default seccomp | kept | biggest attack-surface cut; validated with systemd + nested podman + bwrap + flatpak |
 | `/proc` masking | kept | `--systemd=always` mounts what PID 1 needs |
 | `SYS_ADMIN SYS_NICE MKNOD` | kept | systemd/mounts/nesting, scheduling, nested device nodes |
-| `NET_ADMIN`/`NET_RAW` | dropped from base | nothing in the base uses them (eth0 is configured host-side; nested podman gets its own in its userns). `40-virt.conf` / `70-vpn.conf` add them back |
+| `NET_ADMIN`/`NET_RAW` | in base | nested ROOTFUL podman (`sudo podman run` inside) needs them: netavark builds a bridge, veth and nftables rules in the container's own netns and fails with `Netlink error: Operation not permitted` otherwise. Namespaced by `userns=auto`, so they reach the container's netns and nothing of the host's — **except** under `Network=host`, where the netns is the host's and you should drop them |
 | `/dev/fuse` + `/dev/net/tun` | kept | tun: pasta (nested rootless podman networking). fuse: flatpak document portal + fuse-overlayfs fallback. Devices only, no capabilities |
 | `label=disable` | the one open item | `container_t` breaks boot on an Enforcing host; no dedicated policy module yet |
 
@@ -190,30 +264,33 @@ Do not expose the container's sshd to the public internet.
 stores. The system quadlet reads the rootful store — `just build` uses
 `sudo podman build`; a rootless build is invisible to the unit.
 
-## /etc factory pattern
+## Rebasing: what a new image changes on an existing box
 
-Build-time: pacman populates `/etc`, `system/etc` overlays our
-drop-ins, build steps apply presets/masks, and the final image
-snapshots `/etc` and `/var` to `/usr/share/factory/{etc,var}`.
+Because every image-owned tree is an overlay with the image as the
+lower, a rebase behaves the same way in `/etc` as it always has in
+`/usr`:
 
-Runtime: the default (no-bind) container runs straight from the live
-trees. With a persistent bind, the host-side `ExecStartPre` pre-seed
-(and the in-container seed services as fallback) populate an EMPTY bind
-once from the factory; a populated bind is never overwritten. Factory
-reset = `rm -rf /srv/<name>/{etc,var}` while stopped.
+| On the box | After pulling a newer image |
+|---|---|
+| file you never touched | **updated** — it is served from the new lower |
+| file you edited | yours wins; the edit copied it up and the upper shadows the image |
+| file only the new image ships | **appears** |
+| file you deleted | stays deleted — the whiteout in your upper shadows it |
 
-**Upgrade corollary — enablement does not re-sync.** A newer image that
-enables a unit ships that symlink in its FACTORY `/etc`, and a
-populated bind is never re-seeded, so an existing box keeps whatever it
-was seeded with. `/etc` is yours after the first boot, bootc/ostree
-style. After a rebase that changed what is enabled, reconcile by hand:
+That is the property the old seeded-bind model could not offer: a
+populated `/etc` was never re-seeded, so newly enabled units, new
+`environment.d` drop-ins and edited defaults silently never arrived and
+had to be reconciled by hand after every rebase. Now only what you
+personally changed is pinned, and `find /srv/<name>/etc/diff -type f`
+tells you exactly what that is.
 
-```bash
-diff -qr /etc/systemd /usr/share/factory/etc/systemd | grep -i wants
-```
+`ConditionNeedsUpdate=/etc` works again as a side effect — the `/usr`
+lower is newer than the upper's `.updated` stamp after a rebase, so
+`systemd-sysusers` and friends re-run on their own.
 
-and `systemctl enable` / `systemctl --global enable` what is missing,
-removing symlinks left dangling by units the new image dropped.
+The image still snapshots `/usr/share/factory/{etc,var}`: systemd's own
+`tmpfiles.d` copies from it, and it stays a useful reference to diff a
+box against. Nothing seeds from it any more.
 
 The pacman db is NOT part of the persistent `/var`: it lives inside
 the image at `/usr/lib/pacman` (SteamOS-style; `/var/lib/pacman` is a
@@ -233,16 +310,12 @@ paper over a missing one:
 
 | What | Where it is enabled |
 |---|---|
-| system units | `50-mybox.preset` → `systemctl preset-all` at build → symlinks in `/etc`, snapshotted into the factory tree |
+| system units | `50-mybox.preset` → `systemctl preset-all` at build → symlinks in the image's `/etc`, which is the overlay lower |
 | user units (all sessions) | `systemctl --global enable` at build → `/etc/systemd/user/…`, same snapshot |
-| `mybox-{etc,var}-seed`, `mybox-usr-overlay` | static `.wants` symlinks under `/usr/lib/systemd/system/sysinit.target.wants/` |
 
-The last row is the one exception, and the reason is the ordering: a
-preset writes into `/etc`, and those three units are exactly the ones
-that must run when `/etc` is an unseeded empty bind. Shipping their
-enable symlink in `/usr` makes them independent of it. Everything else
-reaches the first boot because the quadlet's `ExecStartPre=` seeds
-`/etc` from the factory tree HOST-side, before PID 1 ever reads it.
+No exceptions and no bootstrap problem: the pre-init has already
+assembled `/etc` before PID 1 reads a single symlink, so an enable
+baked at build time is simply there on the first boot.
 
 **`Upholds=` is not a stronger `Wants=`** — it re-asserts "keep active"
 every time a unit goes inactive, so it busy-loops on `Type=oneshot` +
@@ -253,27 +326,21 @@ myosi project one mis-wired condition unit produced 27,380 restarts in
 the boot transaction is frozen, which is what a sysext merge does — and
 that is precisely the situation mybox does not have.
 
-**Where a service comes from decides whether `enable` sticks.** A unit
-baked into the IMAGE lives in the pristine `/usr` lower, readable by
-PID 1 from the first instant of boot, so `systemctl enable` behaves
-exactly as it does anywhere else. A unit installed at RUNTIME
-(`pacman -S` inside) lands in the `/usr` overlay upperdir, which is not
-mounted until `mybox-usr-overlay.service` runs at sysinit — after PID 1
-froze the boot job graph. Its enable symlink is a dangling reference
-that boot drops with a warning, so it needs one `systemctl start` per
-boot.
+**`systemctl enable` sticks for runtime-installed units too.** This used
+to be false: the `/usr` overlay was mounted by a service at sysinit,
+i.e. after PID 1 had already frozen the boot job graph, so a unit that
+arrived via `pacman -S` was a dangling enable symlink that boot dropped
+with a warning and it needed one manual `systemctl start` per boot. The
+pre-init mounts `/usr` before systemd exists, so the unit file is simply
+there when the transaction is built — verified by installing a unit at
+runtime, enabling it, and restarting the container: `active`, `enabled`.
 
-That is a property of the overlay, not a bug to route around, and it
-maps cleanly onto how you are meant to use the two: **install at
-runtime to try something, bake a variant image to keep it.** Layer a
-`Containerfile` on `FROM ghcr.io/aboglioli/mybox`, `pacman -S` there,
-`systemctl enable` there, and the unit is in `/usr` at boot like any
-other. This is also why nothing optional (libvirt sockets, pipewire,
-gnome-keyring) is wired in the base image: a drop-in naming
-`virtqemud.socket` is evaluated on EVERY box, so one without libvirt
-logs `Unit not found` per unit per boot and carries them forever in
-`systemctl list-units --state=not-found` — 19 phantom units for libvirt
-alone.
+Nothing optional is still wired in the base image, but for a different
+reason: a drop-in naming `virtqemud.socket` is evaluated on EVERY box,
+so one without libvirt logs `Unit not found` per unit per boot and
+carries them forever in `systemctl list-units --state=not-found` — 19
+phantom units for libvirt alone. Install the package, then
+`systemctl enable --now` its units like on any other machine.
 
 ## In-container CLI
 
@@ -284,6 +351,7 @@ justfile. Slot convention: 00-49 shipped, 50-99 local additions.
 | Recipe | What it does |
 |---|---|
 | `install-nvidia` | installs userland matching the host driver via the official `.run` (raw-device path; the CDI drop-in doesn't need it). Re-run after host driver upgrades |
+| `diff [tree]` | what this box changed in `/etc` (or `var`/`usr`/`opt`), compared against the overlay's real lower |
 
 ## NVIDIA
 

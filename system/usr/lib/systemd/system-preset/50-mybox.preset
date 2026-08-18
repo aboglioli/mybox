@@ -23,15 +23,9 @@ enable systemd-networkd.service
 enable systemd-networkd-wait-online.service
 enable systemd-resolved.service
 
-# /etc seeding from factory tree (cp -an).
-enable mybox-etc-seed.service
-
-# NOT listed here: mybox-etc-seed / mybox-var-seed / mybox-usr-overlay.
-# A preset writes its symlink into /etc, and those three are exactly
-# the units that must run when /etc is still EMPTY (an unseeded bind),
-# so they are enabled the only way that survives that: static
-# .wants symlinks under /usr/lib/systemd/system/sysinit.target.wants/,
-# shipped in the image.
+# No seed or overlay units to list: /usr/libexec/mybox/preinit assembles
+# /etc, /var, /usr and /opt before systemd starts, so by the time presets
+# matter every tree is already in place.
 
 # Create the runtime-configured login user (MYBOX_USER/UID/GID/SHELL
 # env, defaults user/1000/1000/fish). The image bakes no user; this

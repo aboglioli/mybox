@@ -5,19 +5,19 @@ Podman ≥ 5.0 merges any `<unit>.container.d/*.conf` next to the main
 quadlet into the generated `.service`, same semantics as systemd
 `.service.d/*.conf`.
 
-Persistence is **not** here. `/srv/<name>/{etc,var,home,srv}` is part of
-`mybox.container` itself, created on demand by its `ExecStartPre=` and
-not optional: the `/usr` overlay upperdir has to live on a real
-filesystem, so a container without the `/var` bind boots with a
-read-only `/usr`. A throwaway instance gets its own unit name —
-`mybox-test.container` → `/srv/mybox-test` — and you `rm -rf` that
-directory when done.
+Persistence is **not** here. `mybox.container` binds `/srv/<name>` at
+`/.mybox` and `/usr/libexec/mybox/preinit` builds `/etc`, `/var`, `/usr`
+and `/opt` on top of it as overlays before systemd starts, plus plain
+binds for `/home` and `/srv`. None of it is optional — without the state
+bind every tree stays at its read-only image content. A throwaway
+instance gets its own unit name — `mybox-test.container` →
+`/srv/mybox-test` — and you `rm -rf` that directory when done.
 
 ## Drop-ins
 
 | File | Adds |
 |---|---|
-| `05-user.conf` | runtime login user + ssh keys: `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` env (or `EnvironmentFile=/srv/<name>/container.env`) |
+| `05-user.conf` | template for pinning `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` in the repo — all commented, since per-box identity belongs in `/srv/<name>/container.env`, which the quadlet loads already |
 | `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env |
 | `20-gpu.conf` | `/dev/dri`, `/dev/snd`, `/dev/input` (Intel/AMD stack) |
 | `30-nvidia.conf` | `AddDevice=nvidia.com/gpu=all` via CDI (no in-container install needed) |
@@ -27,6 +27,7 @@ directory when done.
 | `50-desktop.conf` | TTYs, `/dev/uinput`, SYS_TTY_CONFIG for a compositor INSIDE (host text-mode) |
 | `60-shared-folder.conf` | bind `/mnt/shared` |
 | `70-vpn.conf` | in-container VPN (wireguard / tailscale): NET_ADMIN + NET_RAW |
+| `85-publish-ssh.conf` | expose the container's sshd at `<host>:2222` — for `mybox-nat.network`, remove it on `mybox-lan.network` |
 | `80-static-ip.conf` | pin a fixed IP (static IPAM networks) |
 | `81-static-mac.conf` | pin the MAC → stable DHCP lease → stable LAN IP across recreates |
 

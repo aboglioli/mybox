@@ -1,0 +1,34 @@
+# mybox-lan.network — the container is an independent host on your LAN.
+#
+# macvlan gives the container its own MAC on a physical NIC, so your
+# router sees a separate machine: it DHCPs its own LAN address, answers
+# on it directly, and needs no port publishing at all. This is the
+# closest thing to running a VM on a bridged NIC.
+#
+# Requirements, all of them real:
+#   * WIRED nic. Wifi drivers refuse macvlan children.
+#   * The NIC must not be enslaved to a bridge (the kernel rejects a
+#     macvlan on a bridge slave).
+#   * `sudo systemctl enable --now netavark-dhcp-proxy.socket` on the
+#     host, which is what actually speaks DHCP for IPAM=dhcp.
+#
+# The one catch, and it is a kernel rule rather than a mybox choice:
+# THE HOST CANNOT TALK TO THE CONTAINER over macvlan, and vice versa.
+# Every other machine on the LAN can. If you need host <-> container
+# traffic, stay on mybox-nat.network — or reach it from another box.
+#
+# Set parent= to the NIC holding your LAN route:
+#   ip -o route get 1.1.1.1 | awk '{print $5}'
+
+[Network]
+NetworkName=mybox-lan
+Driver=macvlan
+Options=parent=enp108s0
+Options=mode=bridge
+IPAMDriver=dhcp
+
+# Static address instead of DHCP: drop IPAMDriver=dhcp, declare your LAN
+# subnet here and pin the address with the 80-static-ip.conf drop-in.
+# Pick one outside the router's DHCP pool.
+# Subnet=192.168.0.0/24
+# Gateway=192.168.0.1

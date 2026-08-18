@@ -34,20 +34,35 @@ HostName=%p
 # date tag here (and in the seed ExecStartPre below) to freeze. Local dev:
 # `just build` tags a local build over this same reference.
 Image=ghcr.io/aboglioli/mybox:latest
-Exec=/sbin/init
+# Not /sbin/init directly: the pre-init assembles the root filesystem
+# (every image-owned tree as an overlay over the host state bind) and then
+# execs systemd, which PID 1 could not do for itself — it reads /etc before
+# any unit runs. podman still treats this as a systemd container because
+# --systemd=always is set explicitly below.
+Exec=/usr/libexec/mybox/preinit
 
 # Register with host systemd-machined: machinectl shell/login, journalctl -M.
 Annotation=run.oci.systemd.machine=true
 
 # Hardened set (see README "Security posture"). The userns remap is the
-# load-bearing control; capabilities are namespaced by it. Kept to the
-# minimum systemd PID 1 + nested podman need: SYS_ADMIN (mounts/
-# nesting), SYS_NICE, MKNOD. Default seccomp; /proc stays masked.
-# NET_ADMIN/NET_RAW deliberately absent — eth0 is configured host-side
-# by netavark, and nested rootless podman gains its own CAP_NET_ADMIN
-# in the userns it creates; 40-virt.conf / 70-vpn.conf append them when
-# the feature needs them.
-AddCapability=SYS_ADMIN SYS_NICE MKNOD
+# load-bearing control; capabilities are namespaced by it. SYS_ADMIN
+# (mounts/nesting), SYS_NICE, MKNOD, plus NET_ADMIN/NET_RAW.
+#
+# The net caps are there for NESTED ROOTFUL PODMAN, which is a first-class
+# thing to do on a daily driver: `sudo podman run` inside makes netavark
+# build a bridge, a veth pair and nftables rules in the container's OWN
+# network namespace, and without CAP_NET_ADMIN that dies with
+#
+#   Error: netavark: Netlink error: Operation not permitted (os error 1)
+#
+# Nested ROOTLESS podman never needed them — it creates its own userns and
+# gets the caps there — which is why the base went without for so long.
+#
+# What this does NOT grant: under --userns=auto these caps are namespaced,
+# so they apply to the container's own netns and nothing of the host's.
+# The exception is Network=host, where the netns IS the host's and
+# NET_ADMIN really does mean the host's networking — drop them there.
+AddCapability=SYS_ADMIN SYS_NICE MKNOD NET_ADMIN NET_RAW
 
 # SELinux: the one remaining relaxation — container_t breaks boot.
 SecurityLabelDisable=true
@@ -69,20 +84,40 @@ Tmpfs=/var/tmp
 # the host under /srv/<name> (derived from the unit name via %p, so
 # mybox-1.container gets /srv/mybox-1 and never collides).
 #
-#   /etc   system config: preset symlinks, users, sshd keys
-#   /var   system state — AND the /usr + /opt overlay upperdirs that
-#          mybox-usr-overlay.service mounts at boot. This is why the
-#          bind is not optional: an upperdir cannot live on the
-#          container's own overlayfs, the kernel refuses it, and /usr
-#          would stay read-only (no pacman, no NVIDIA userland)
-#   /home  user data — outlives factory resets of /etc + /var
-#   /srv   service data for nested quadlets
+# ONE bind carries the system state. /.mybox holds an overlay upper per
+# image-owned tree, which /usr/libexec/mybox/preinit mounts before systemd
+# starts:
+#
+#   /.mybox/etc  ->  /etc      /.mybox/usr  ->  /usr
+#   /.mybox/var  ->  /var      /.mybox/opt  ->  /opt
+#
+# It is mounted at a path that is NEVER itself overlaid, because the kernel
+# refuses overlayfs as an upperdir — an upper stored inside /var stops
+# working the moment /var is an overlay.
+#
+#   /.mybox/var/lib/{containers,flatpak}   bulk payloads, bound back over
+#                                          the /var overlay by the pre-init
+#
+# /home and /srv stay plain binds: they hold no image content to layer
+# over, and /srv is empty by contract for nested quadlets to fill.
 #
 # `:idmap` keeps host-side ownership at the container's numeric UIDs.
-# Factory reset: stop → sudo rm -rf /srv/<name>/{etc,var} → start.
+# Factory reset: stop → sudo rm -rf /srv/<name>/{etc,var}/diff → start,
+# which resets configuration WITHOUT touching /home or the bulk payloads.
 # Throwaway instance: give it its own name, delete /srv/<name> after.
-Volume=/srv/%p/etc:/etc:idmap
-Volume=/srv/%p/var:/var:idmap
+# Per-instance runtime config, read HOST-side at start and handed to the
+# container's env, where PID 1 carries it to mybox-user-setup. This is the
+# natural home for what differs BETWEEN boxes — the login name, uid, ssh
+# keys — because it lives with the instance's state rather than in the
+# repo: mybox-1 and mybox-2 each get their own.
+#
+# The ExecStartPre below creates it empty, and that is load-bearing:
+# podman fails the whole start on a missing --env-file. Anything set with
+# Environment= in a drop-in OVERRIDES this file, so the shipped
+# 05-user.conf leaves its lines commented.
+EnvironmentFile=/srv/%p/container.env
+
+Volume=/srv/%p:/.mybox:idmap
 Volume=/srv/%p/home:/home:idmap
 Volume=/srv/%p/srv:/srv:idmap
 
@@ -98,12 +133,14 @@ AddDevice=/dev/net/tun
 # covers real-time audio, Wine/Proton, mmap-heavy loads.
 Ulimit=memlock=3221225472:3221225472
 
-# Network — pick ONE (switch via drop-in: `Network=` empty, then value):
-#   mybox-bridge.network    join existing host br0 → real LAN IP (default)
-#   mybox-macvlan.network   own LAN IP on a physical NIC (not bridged)
-#   mybox-managed.network   podman NAT bridge — works everywhere
-#   host                    share host netns (sshd on :2222)
-Network=mybox-bridge.network
+# Network — pick ONE (switch via `MYBOX_NETFILE=… just install`):
+#   mybox-nat.network   podman bridge + NAT, works anywhere. Inbound via
+#                       PublishPort= (see 85-publish-ssh.conf)
+#   mybox-lan.network   macvlan: the container is its own host on the LAN
+#                       with its own DHCP lease. Wired NIC only, and the
+#                       HOST cannot reach it (kernel rule)
+#   host                share the host netns entirely (sshd on :2222)
+Network=mybox-nat.network
 
 # DNS is baked into the image (resolved.conf.d + nsswitch `resolve`) —
 # netavark's DHCP overwrites /etc/resolv.conf, so DNS= here would not
@@ -116,24 +153,13 @@ Restart=on-failure
 TimeoutStartSec=600
 
 # The state dirs are created on demand, so a new <name>.container just
-# works — no manual mkdir before the first start.
-ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc /srv/%p/var /srv/%p/home /srv/%p/srv
-
-# HOST-SIDE first-boot seeding via a throwaway container. PID 1 reads
-# /etc (machine-id, preset enable symlinks) before any in-container
-# unit could seed it, so an empty bind must be populated beforehand —
-# this is what makes `enable` in the image reach the first boot, and
-# why mybox needs no Wants=/Upholds= drop-ins to bootstrap itself. The
-# in-container mybox-{etc,var}-seed.service remain as fallback for a
-# hand-rolled `podman run`.
-#
-# The seed run is deliberately WITHOUT userns/idmap: it writes real
-# numeric uids that the main container then views through its :idmap
-# binds (`:idmap` here would invert the mapping and EACCES).
-# label=disable matches the main container. KEEP THE IMAGE REFERENCE IN
-# SYNC WITH Image= ABOVE.
-ExecStartPre=/bin/sh -c 'test -n "$(ls -A /srv/%p/etc)" || podman run --rm --security-opt label=disable -v /srv/%p/etc:/seed ghcr.io/aboglioli/mybox:latest cp -a /usr/share/factory/etc/. /seed/'
-ExecStartPre=/bin/sh -c 'test -n "$(ls -A /srv/%p/var)" || podman run --rm --security-opt label=disable -v /srv/%p/var:/seed ghcr.io/aboglioli/mybox:latest cp -a /usr/share/factory/var/. /seed/'
+# works — no manual mkdir before the first start. Nothing is SEEDED any
+# more: each tree's content comes from the image as the overlay's lower,
+# so an empty upper is a complete /etc, and a newer image's changes show
+# through instead of being frozen at whatever was copied once.
+ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc /srv/%p/var /srv/%p/usr /srv/%p/opt /srv/%p/home /srv/%p/srv
+# EnvironmentFile= above is fatal when absent, so guarantee it exists.
+ExecStartPre=/usr/bin/touch /srv/%p/container.env
 
 [Install]
 WantedBy=multi-user.target

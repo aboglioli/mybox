@@ -19,7 +19,7 @@
 [Unit]
 Description=Create the runtime-configured login user
 Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
-After=local-fs.target mybox-etc-seed.service systemd-logind.service dbus.service
+After=local-fs.target systemd-logind.service dbus.service
 Before=systemd-user-sessions.service sshd.service
 ConditionVirtualization=container
 

@@ -1,0 +1,44 @@
+# mybox-nat.network — podman-managed bridge with NAT. THE DEFAULT.
+#
+# The container gets an address inside a private podman network and
+# reaches the world through the host's NAT. Nothing is assumed about
+# your LAN, so this works everywhere: wifi, laptops that roam, hosts
+# with no spare NIC, CI. The host reaches the container directly on its
+# podman IP, and the LAN reaches it only through ports you publish.
+#
+# Inbound needs PublishPort= in a drop-in, because a NAT'd container has
+# no address of its own on the LAN. 85-publish-ssh.conf does that for
+# sshd; copy it for anything else you serve:
+#
+#   PublishPort=8080:80        LAN -> host:8080 -> container:80
+#   PublishPort=127.0.0.1:5432:5432   host-only, not exposed to the LAN
+#
+# Want the container to BE a host on your LAN instead, with its own IP
+# and no publishing? Use mybox-lan.network.
+#
+# NO Subnet=/Gateway= on purpose. podman allocates a free range per host
+# from its default pool, which is what makes this file portable: pinning
+# one hardcodes an assumption about the host's address space, and a host
+# where that range is taken - by another podman network, docker, libvirt,
+# a VPN - fails outright with
+#
+#   Error: subnet 10.89.0.0/24 is already used on the host or by another config
+#
+# and the container never starts. 10.89.0.0/24 is the worst possible pin
+# besides: it is the FIRST entry in podman's own pool, so it is the range
+# most likely to be occupied already.
+#
+# The allocation is stable anyway. The network object is created once and
+# outlives container recreations, so the address only moves if the object
+# is deleted (just net-reset) or the box is rebuilt elsewhere.
+#
+# Pin it only when something outside podman needs to know the range up
+# front - firewall rules, or a static IP via 80-static-ip.conf - and accept
+# that the file stops being host-agnostic:
+#
+#   Subnet=10.89.0.0/24
+#   Gateway=10.89.0.1
+
+[Network]
+NetworkName=mybox-nat
+Driver=bridge

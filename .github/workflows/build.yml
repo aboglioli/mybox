@@ -58,20 +58,20 @@ jobs:
             test -d /usr/share/factory/var
             test -x /usr/local/bin/mybox
             test -x /usr/libexec/mybox/user-setup
-            test -x /usr/libexec/mybox/usr-overlay
+
+            # PID 1 is the pre-init that assembles the root trees; if it
+            # is missing or not executable the container cannot boot at
+            # all, and /.mybox is where every overlay upper is expected.
+            test -x /usr/libexec/mybox/preinit
+            test -d /.mybox
 
             # Enablement is baked at build time, so its absence is a
-            # build bug, not a runtime surprise: the seed units must be
-            # wired from /usr (they run before /etc is populated) and
-            # the per-session units from the global user preset.
-            test -L /usr/lib/systemd/system/sysinit.target.wants/mybox-etc-seed.service
-            test -L /usr/lib/systemd/system/sysinit.target.wants/mybox-var-seed.service
-            test -L /usr/lib/systemd/system/sysinit.target.wants/mybox-usr-overlay.service
+            # build bug, not a runtime surprise.
             test -L /usr/share/factory/etc/systemd/user/default.target.wants/mybox-host-sockets.service
             test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-user-setup.service
 
             # sysusers ran at build time, so declared accounts exist in
-            # the factory /etc every box is seeded from.
+            # the /etc that every box overlays.
             getent passwd qemu >/dev/null
 
             # Unit files parse. systemd-analyze exits non-zero on any
@@ -101,14 +101,16 @@ jobs:
                  --dryrun > /tmp/q.out
 
               # Persistence is not optional: the state dirs are created
-              # before start and every one of them is bound.
+              # before start, the single state bind carries every overlay
+              # upper, and the data trees are bound alongside it.
               grep -q "ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc" /tmp/q.out
-              for d in etc var home srv; do
+              grep -q "/srv/%p:/.mybox:idmap" /tmp/q.out
+              for d in home srv; do
                 grep -q "/srv/%p/$d:/$d:idmap" /tmp/q.out
               done
 
-              # And /etc is seeded host-side, before PID 1 reads it.
-              grep -q "usr/share/factory/etc" /tmp/q.out
+              # PID 1 must be the pre-init, or nothing is overlaid.
+              grep -q "libexec/mybox/preinit" /tmp/q.out
             '
 
       - name: Push to GHCR

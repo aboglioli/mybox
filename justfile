@@ -112,12 +112,19 @@ net-reset:
     #!/usr/bin/env bash
     set -euo pipefail
     name=$(sed -n 's/^NetworkName=//p' "{{mybox_dir}}/container/{{mybox_netfile}}")
-    echo ">>> removing podman network '$name' (it is recreated on next start)"
+    netunit="$(basename "{{mybox_netfile}}" .network)-network.service"
+    echo ">>> rebuilding podman network '$name' from {{mybox_netfile}}"
     sudo systemctl stop {{unit}} || true
+    # The generated network unit is RemainAfterExit=yes, so it stays active
+    # after creating the network and would NOT re-run: deleting the network
+    # underneath it just leaves the container starting against nothing.
+    sudo systemctl stop "$netunit" || true
     sudo podman network rm -f "$name" 2>/dev/null || true
+    # Clear the start-rate limit a failed attempt may have tripped.
+    sudo systemctl reset-failed {{unit}} "$netunit" 2>/dev/null || true
     sudo systemctl start {{unit}}
     echo ">>> done:"
-    sudo podman network inspect "$name" --format '    {{{{.Name}}}} {{{{.Driver}}}} {{{{range .Subnets}}}}{{{{.Subnet}}}}{{{{end}}}}'
+    sudo podman network inspect "$name" --format '    {{{{.Name}}  driver={{{{.Driver}}  {{{{range .Subnets}}{{{{.Subnet}} gw {{{{.Gateway}}{{{{end}}'
 
 # Start the unit — systemd creates the container.
 start:

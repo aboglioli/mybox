@@ -16,12 +16,29 @@
 # Want the container to BE a host on your LAN instead, with its own IP
 # and no publishing? Use mybox-lan.network.
 #
-# The subnet is pinned so firewall rules and any host-side config keep
-# working across recreations. Change it if 10.89.0.0/24 collides with
-# something; podman would otherwise pick a free range on its own.
+# NO Subnet=/Gateway= on purpose. podman allocates a free range per host
+# from its default pool, which is what makes this file portable: pinning
+# one hardcodes an assumption about the host's address space, and a host
+# where that range is taken - by another podman network, docker, libvirt,
+# a VPN - fails outright with
+#
+#   Error: subnet 10.89.0.0/24 is already used on the host or by another config
+#
+# and the container never starts. 10.89.0.0/24 is the worst possible pin
+# besides: it is the FIRST entry in podman's own pool, so it is the range
+# most likely to be occupied already.
+#
+# The allocation is stable anyway. The network object is created once and
+# outlives container recreations, so the address only moves if the object
+# is deleted (just net-reset) or the box is rebuilt elsewhere.
+#
+# Pin it only when something outside podman needs to know the range up
+# front - firewall rules, or a static IP via 80-static-ip.conf - and accept
+# that the file stops being host-agnostic:
+#
+#   Subnet=10.89.0.0/24
+#   Gateway=10.89.0.1
 
 [Network]
 NetworkName=mybox-nat
 Driver=bridge
-Subnet=10.89.0.0/24
-Gateway=10.89.0.1

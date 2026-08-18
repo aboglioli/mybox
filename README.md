@@ -218,6 +218,15 @@ Switch with `MYBOX_NETFILE=mybox-lan.network just install`, then
 `80-static-ip.conf` (static IPAM) or `81-static-mac.conf` (stable DHCP
 lease).
 
+Neither file pins a subnet. podman allocates a free range per host,
+which is what keeps them reusable: a hardcoded range fails outright on a
+host where something else already holds it (`subnet … is already used on
+the host or by another config`) and the container never starts. The
+allocation is stable anyway — the network object outlives container
+recreations. Pin `Subnet=`/`Gateway=` only when something outside podman
+needs the range up front, and accept that the file stops being
+host-agnostic.
+
 **Editing a `.network` file is not enough on its own.** Quadlet creates
 the podman network object only when it is missing and never reconciles an
 existing one against the file, so an edit — or a switch that reuses the

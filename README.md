@@ -89,6 +89,15 @@ Inside, `/root` symlinks to `/var/roothome` and `/var/lib/pacman` to
 which podman mounts itself and which survives the `/var` overlay, so
 the journal stays RAM-backed and per-boot.
 
+**Tooling outside the container sees the IMAGE's `/etc`, not yours.** The
+overlays exist only inside the container's mount namespace, so anything
+resolving from the host side reads the pristine image tree. The one place
+that bites is `podman exec -u <name>`, which looks the name up in the
+image's `/etc/passwd` — where the runtime user deliberately does not
+exist — and fails with `unable to find user`. `podman exec -u 1000`
+works, and `just enter` resolves the name inside with `runuser`. Anything
+running *in* the container (sshd, login, su, systemd) is unaffected.
+
 **The pristine lower stays reachable.** Once an overlay is mounted its
 lower has no name left, so the pre-init publishes each one read-only at
 `/run/mybox/lower/<tree>` first. That is the actual lower rather than a

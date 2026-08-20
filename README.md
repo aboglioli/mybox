@@ -5,7 +5,7 @@ PID 1, running as a **podman quadlet** on top of an immutable host OS
 (sibling projects [myos](https://github.com/aboglioli/myos) /
 [myosi](https://github.com/aboglioli/myosi), or any Linux host with
 podman ≥ 5). `mybox.container` plus `container/*.conf` drop-ins are
-installed under `/etc/containers/systemd`, with systemd owning the
+copied under `/etc/containers/systemd`, with systemd owning the
 lifecycle. The `justfile` builds the image, installs the unit files and
 gives you a shell; it does not drive podman by hand.
 
@@ -21,6 +21,7 @@ mybox/
 ├── mybox.container              # rootful quadlet (minimal base)
 ├── container.env.example        # MYBOX_* runtime config template
 ├── container/                   # quadlet drop-ins + .network files (see container/README.md)
+├── host/                        # HOST-side systemd units (start trigger; see host/README.md)
 └── system/                      # image config tree (Containerfile COPY)
     ├── etc/                     # → /etc (snapshotted to /usr/share/factory/etc)
     └── usr/                     # → /usr (immutable at runtime)
@@ -132,23 +133,76 @@ just login          # full PAM session as the runtime user
 ```
 
 Quadlets cannot be `systemctl enable`d — the generator wires boot from
-the unit's `[Install]` section, so one `just start` survives reboots.
+the unit's `[Install]` section. What that means here depends on whether
+the box has a GUI; see **Start model** below.
 
 | Recipe | What it does |
 |---|---|
 | `just build` | local build tagged over the published reference, into the rootful store |
-| `just install [drop-ins…]` | symlink quadlet + `.network` + chosen drop-ins, `daemon-reload`. Declarative: removes previously-linked drop-ins not in the set |
+| `just install [drop-ins…]` | **copy** quadlet + `.network` + chosen drop-ins, wire the start trigger, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set |
 | `just start` / `stop` | start/stop the unit — stop removes the container; `/srv/<name>` survives |
-| `just restart` | recreate against the current image + drop-ins |
+| `just sync` | re-copy the installed unit files from this repo — the "apply my edits" verb, since install copies rather than symlinks. Changes nothing about *which* drop-ins are selected |
+| `just restart` | `sync`, then recreate against the current image + drop-ins |
 | `just status` / `logs` | unit + container state + LAN IP / follow journal |
 | `just enter [user]` | fast shell (`podman exec`, no PAM session) |
 | `just login [user]` | full PAM/logind session (`login -f`) |
 
 Justfile knobs (env vars): `MYBOX_IMAGE`, `MYBOX_CONTAINER`,
-`MYBOX_USERNAME`, `MYBOX_NETFILE`, `MYBOX_DROPINS`. Everything else —
+`MYBOX_USERNAME`, `MYBOX_NETFILE`, `MYBOX_DROPINS`, `MYBOX_WAYLAND`. Everything else —
 network, GUI, GPU, devices, capabilities, runtime user — is a drop-in
 in `container/` (see `container/README.md`). Persistence is not: it is
 part of `mybox.container` and always on.
+
+## Start model
+
+**Unit files are COPIES, never symlinks.** The quadlet generator runs at
+the very start of the boot transaction — before `local-fs.target`, before
+any `.mount` unit — so a symlink from `/etc/containers/systemd` into a tree
+under `/home` is unreadable exactly when it matters. The generator then
+emits **nothing**, and `systemctl status mybox.service` says `Unit
+mybox.service could not be found` — no unit at all, rather than a failed
+one. The familiar workaround (`daemon-reload` after login, then start by
+hand, every boot) is the symptom.
+
+On an encrypted home this is unfixable by any unlock method: homed has no
+TPM2 support (`homectl` has no `--tpm2-device`),
+`systemd-homed-activate.service` has no `ExecStart`, and linger governs
+*user*-scope quadlets while this is a rootful *system* quadlet. Copying is
+the fix. `just sync` pushes later repo edits to `/etc`, and `just restart`
+runs it first.
+
+**The start trigger follows the drop-in set:**
+
+| Host shape | Boot wiring | Trigger |
+|---|---|---|
+| **headless** (no `10-gui`) | `WantedBy=multi-user.target` | starts at boot; up before anyone logs in |
+| **GUI** (`10-gui`) | cancelled by `10-gui.conf` | `host/mybox-gui.path` — starts it when the wayland socket appears |
+
+A GUI host can't boot-start: `10-gui.conf` binds sockets under
+`/run/user/<uid>` that don't exist until a compositor runs, and podman
+hard-fails a missing bind source (`statfs …: no such file or directory`).
+So it carries `[Install] WantedBy=` (an empty assignment resets the list,
+so the generator emits no `multi-user.target.wants/` symlink) and
+`host/mybox-gui.path` triggers on the socket instead — which means home
+decrypted, logged in, and compositor up. It's a real file: `just install`
+copies it and retargets `PathExists=`/`Unit=` from
+`MYBOX_WAYLAND`/`MYBOX_CONTAINER`, or `cp` it by hand (`host/README.md`).
+
+Drop `10-gui` and boot-start returns by itself. Two inherent limits when
+using it:
+
+- **Re-login does not re-attach the sockets** — a bind pins the inode, so
+  the next session's new socket is invisible to the running container.
+  `just restart` after re-logging in.
+- **An ssh-only login never starts it** — no compositor, no socket. Such a
+  box wants the headless set.
+
+Check what the generator will really do:
+
+```bash
+sudo /usr/lib/systemd/system-generators/podman-system-generator /tmp/g /tmp/g /tmp/g
+find /tmp/g     # multi-user.target.wants/mybox.service present == boot start
+```
 
 ## Runtime user + SSH keys
 

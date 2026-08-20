@@ -16,6 +16,9 @@
 # `systemctl daemon-reload && systemctl start mybox`. Quadlets cannot be
 # `enable`d — [Install] wires boot via the generator.
 #
+# COPY these files, never symlink them from /home: generators run before
+# any mount, so such a link is unreadable and NO unit gets generated.
+#
 # Lifecycle:
 #   config change   edit drop-in → daemon-reload → restart (state kept)
 #   image rebase    rebuild/pull image → restart
@@ -25,6 +28,8 @@
 Description=%p — rootful system container (systemd PID 1)
 After=network-online.target
 Wants=network-online.target
+# /srv/%p may be its own filesystem; don't start before it is mounted.
+RequiresMountsFor=/srv/%p
 
 [Container]
 ContainerName=%p
@@ -161,5 +166,7 @@ ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc /srv/%p/var /srv/%p/usr /srv/%p/opt /
 # EnvironmentFile= above is fatal when absent, so guarantee it exists.
 ExecStartPre=/usr/bin/touch /srv/%p/container.env
 
+# Headless default: up before anyone logs in. GUI hosts can't do this
+# (see 10-gui.conf) and get a %p-gui.path trigger instead.
 [Install]
 WantedBy=multi-user.target

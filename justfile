@@ -32,6 +32,10 @@ mybox_netfile := env_var_or_default("MYBOX_NETFILE", "mybox-nat.network")
 # exactly ONE — both would pass the devices twice.
 mybox_dropins := env_var_or_default("MYBOX_DROPINS", "05-user 10-gui 20-gpu 31-nvidia-raw 85-publish-ssh")
 
+# Socket that means the desktop session is ready. Only used with the
+# 10-gui drop-in; keep in sync with container/10-gui.conf.
+mybox_wayland := env_var_or_default("MYBOX_WAYLAND", "/run/user/1000/wayland-1")
+
 quadlet_dir := "/etc/containers/systemd"
 unit := mybox_name + ".service"
 
@@ -44,10 +48,16 @@ build:
     sudo podman build -t "{{mybox_image}}" "{{mybox_dir}}"
     @echo ">>> done. apply with: just restart"
 
-# Symlink quadlet + network + drop-ins into /etc/containers/systemd.
-# Symlinks (not copies) so repo edits apply on the next daemon-reload.
+# Install quadlet + network + drop-ins into /etc/containers/systemd.
+#
+# COPIES, not symlinks: generators run before any mount, so a link into
+# /home is unreadable at boot and NO unit is generated. Use `just sync`
+# to push repo edits afterwards.
+#
 # Name drop-ins to override the default set:
 #   just install 05-user 10-gui 31-nvidia-raw
+#
+# Copy quadlet + network + drop-ins to /etc, wire the start trigger.
 install *dropins:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -57,9 +67,13 @@ install *dropins:
       [[ -f "$SRC/container/$d.conf" ]] || { echo "ERROR: no drop-in container/$d.conf" >&2; exit 1; }
     done
     sudo mkdir -p "$QD/$NAME.container.d"
-    sudo ln -sfn "$SRC/mybox.container" "$QD/$NAME.container"
-    sudo ln -sfn "$SRC/container/{{mybox_netfile}}" "$QD/{{mybox_netfile}}"
-    # Point the container at the network we just linked. Without this,
+    # rm first: install(1) follows an existing symlink and would truncate
+    # its target - i.e. clobber this repo on a box installed by the old
+    # symlinking version of this recipe.
+    sudo rm -f "$QD/$NAME.container" "$QD/{{mybox_netfile}}"
+    sudo install -m0644 "$SRC/mybox.container" "$QD/$NAME.container"
+    sudo install -m0644 "$SRC/container/{{mybox_netfile}}" "$QD/{{mybox_netfile}}"
+    # Point the container at the network we just installed. Without this,
     # MYBOX_NETFILE would only change which FILE is installed while
     # mybox.container still named the old one — and the generator drops the
     # container unit entirely when it references a network that is not
@@ -72,30 +86,51 @@ install *dropins:
     Network={{mybox_netfile}}
     EOF
     for d in $LIST; do
-      sudo ln -sfn "$SRC/container/$d.conf" "$QD/$NAME.container.d/$d.conf"
+      sudo rm -f "$QD/$NAME.container.d/$d.conf"
+      sudo install -m0644 "$SRC/container/$d.conf" "$QD/$NAME.container.d/$d.conf"
     done
-    # Declarative: remove previously-linked drop-ins not in LIST (only
-    # symlinks into this repo — hand-written local drop-ins are kept).
+    # Declarative: drop what is no longer in LIST. A copy carries no link
+    # back to the repo, so "ours" is decided by name — hand-written local
+    # drop-ins have no counterpart in container/ and are left alone.
     for f in "$QD/$NAME.container.d"/*.conf; do
-      [[ -L "$f" ]] || continue
-      case "$(readlink -f "$f")" in "$SRC/container/"*) ;; *) continue ;; esac
+      [[ -e "$f" ]] || continue
       b=$(basename "$f" .conf)
+      [[ -f "$SRC/container/$b.conf" ]] || continue
       grep -qw -- "$b" <<<"$LIST" || { echo "    removing stale drop-in: $b"; sudo rm -f "$f"; }
     done
-    # Same for .network files, and this one is not cosmetic: ONE dangling
-    # link makes the quadlet generator abort the whole run, so a renamed or
-    # deleted .network takes every unit down with it, mybox.service included.
+    # Same for .network files, and not cosmetic: ONE unreadable entry makes
+    # the generator abort the whole run, mybox.service included.
     for f in "$QD"/*.network; do
-      [[ -e "$f" || -L "$f" ]] || continue
-      [[ "$(basename "$f")" == "{{mybox_netfile}}" ]] && continue
-      if [[ -L "$f" ]]; then
-        case "$(readlink "$f")" in "$SRC/container/"*) ;; *) continue ;; esac
-      else
-        continue
-      fi
-      echo "    removing stale network: $(basename "$f")"
+      [[ -e "$f" ]] || continue
+      b=$(basename "$f")
+      [[ "$b" == "{{mybox_netfile}}" ]] && continue
+      [[ -f "$SRC/container/$b" ]] || continue
+      echo "    removing stale network: $b"
       sudo rm -f "$f"
     done
+    # GUI hosts can't boot-start (see 10-gui.conf) and get a path trigger;
+    # headless hosts keep the boot wiring and need neither.
+    PATHUNIT="/etc/systemd/system/$NAME-gui.path"
+    if grep -qw -- '10-gui' <<<"$LIST"; then
+      # host/mybox-gui.path is valid as-is; only retarget the two
+      # host-specific lines.
+      sudo rm -f "$PATHUNIT"
+      sed -e "s|^PathExists=.*|PathExists={{mybox_wayland}}|" \
+          -e "s|^Unit=.*|Unit=$NAME.service|" \
+          -e "s|^Description=.*|Description=Start $NAME when the desktop session is ready|" \
+          "$SRC/host/mybox-gui.path" | sudo tee "$PATHUNIT" >/dev/null
+      sudo chmod 0644 "$PATHUNIT"
+      sudo systemctl daemon-reload
+      sudo systemctl enable --now "$NAME-gui.path"
+      echo "    trigger:  $NAME-gui.path watches {{mybox_wayland}}"
+    else
+      if [[ -e "$PATHUNIT" ]]; then
+        echo "    removing stale trigger: $NAME-gui.path (headless: boot-start)"
+        sudo systemctl disable --now "$NAME-gui.path" 2>/dev/null || true
+        sudo rm -f "$PATHUNIT"
+      fi
+      echo "    trigger:  none — starts at boot (multi-user.target)"
+    fi
     sudo systemctl daemon-reload
     echo ">>> installed $NAME.container"
     echo "    drop-ins: $LIST"
@@ -134,9 +169,43 @@ start:
 stop:
     sudo systemctl stop {{unit}}
 
-# Recreate against the current image + drop-ins.
-restart:
+# Refresh what is already installed, without changing which drop-ins are
+# selected — safe on a box whose set differs from the default below.
+#
+# Re-copy installed unit files from this repo (apply repo edits).
+sync:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    SRC="{{mybox_dir}}"; NAME="{{mybox_name}}"; QD="{{quadlet_dir}}"
+    [[ -e "$QD/$NAME.container" ]] || { echo "ERROR: $NAME.container is not installed — run: just install" >&2; exit 1; }
+    refresh() { sudo rm -f "$2"; sudo install -m0644 "$1" "$2"; echo "    refreshed: $(basename "$2")"; }
+    refresh "$SRC/mybox.container" "$QD/$NAME.container"
+    for f in "$QD/$NAME.container.d"/*.conf; do
+      [[ -e "$f" ]] || continue
+      b=$(basename "$f" .conf)
+      [[ -f "$SRC/container/$b.conf" ]] || continue
+      refresh "$SRC/container/$b.conf" "$f"
+    done
+    for f in "$QD"/*.network; do
+      [[ -e "$f" ]] || continue
+      b=$(basename "$f")
+      [[ -f "$SRC/container/$b" ]] || continue
+      refresh "$SRC/container/$b" "$f"
+    done
+    # ...and the trigger unit, if this box uses one.
+    if [[ -e "/etc/systemd/system/$NAME-gui.path" ]]; then
+      sed -e "s|^PathExists=.*|PathExists={{mybox_wayland}}|" \
+          -e "s|^Unit=.*|Unit=$NAME.service|" \
+          -e "s|^Description=.*|Description=Start $NAME when the desktop session is ready|" \
+          "$SRC/host/mybox-gui.path" | sudo tee "/etc/systemd/system/$NAME-gui.path" >/dev/null
+      echo "    refreshed: $NAME-gui.path"
+    fi
     sudo systemctl daemon-reload
+
+# Re-copies first, so edit-then-restart applies the edit.
+#
+# Recreate against the current image + drop-ins.
+restart: sync
     sudo systemctl restart {{unit}}
 
 # Unit state, container state, LAN IP.

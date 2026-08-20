@@ -5,6 +5,10 @@ Podman ≥ 5.0 merges any `<unit>.container.d/*.conf` next to the main
 quadlet into the generated `.service`, same semantics as systemd
 `.service.d/*.conf`.
 
+Host-side units are **not** here either — the GUI start trigger lives in
+`host/` (see `host/README.md`), because it is a plain systemd unit on the
+machine, not a quadlet drop-in.
+
 Persistence is **not** here. `mybox.container` binds `/srv/<name>` at
 `/.mybox` and `/usr/libexec/mybox/preinit` builds `/etc`, `/var`, `/usr`
 and `/opt` on top of it as overlays before systemd starts, plus plain
@@ -18,7 +22,7 @@ instance gets its own unit name — `mybox-test.container` →
 | File | Adds |
 |---|---|
 | `05-user.conf` | template for pinning `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` in the repo — all commented, since per-box identity belongs in `/srv/<name>/container.env`, which the quadlet loads already |
-| `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env |
+| `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env. Also **cancels boot-start** (`[Install] WantedBy=`) — those sockets do not exist until a compositor runs; `just install` wires `<name>-gui.path` instead |
 | `20-gpu.conf` | `/dev/dri`, `/dev/snd`, `/dev/input` (Intel/AMD stack) |
 | `30-nvidia.conf` | `AddDevice=nvidia.com/gpu=all` via CDI (no in-container install needed) |
 | `31-nvidia-raw.conf` | raw `/dev/nvidia*` + `mybox install-nvidia` inside (when the CDI hook fails under userns) |
@@ -33,8 +37,8 @@ instance gets its own unit name — `mybox-test.container` →
 
 ## Usage
 
-`just install [drop-ins…]` symlinks the chosen set (see the repo
-justfile). By hand, from the repo root:
+`just install [drop-ins…]` copies the chosen set and wires the start
+trigger (see the repo justfile). By hand, from the repo root:
 
 ```bash
 sudo mkdir -p /etc/containers/systemd/mybox.container.d
@@ -43,6 +47,11 @@ sudo cp container/10-gui.conf container/20-gpu.conf container/30-nvidia.conf \
 sudo systemctl daemon-reload
 sudo systemctl restart mybox.service
 ```
+
+**Copy, never symlink** — least of all into a working tree under `/home`.
+The quadlet generator runs before any filesystem is mounted, so a link
+there resolves to nothing and NO unit is generated at all (`Unit
+mybox.service could not be found`). See "Start model" in the repo README.
 
 ## Verifying a drop-in applied
 

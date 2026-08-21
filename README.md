@@ -46,14 +46,22 @@ boot; nothing of value lives inside it.
 |---|---|---|
 | `/srv/<name>` | `/.mybox` | the one state bind — holds every overlay upper. Never itself overlaid |
 | `/srv/<name>/etc/diff` | `/etc` | overlay upper; **lower is the image's `/etc`** |
-| `/srv/<name>/var/diff` | `/var` | overlay upper; lower is the image's `/var` |
 | `/srv/<name>/usr/diff` | `/usr` | overlay upper; lower is the image's `/usr` — pacman installs, NVIDIA userland |
-| `/srv/<name>/opt/diff` | `/opt` | overlay upper |
-| `/srv/<name>/var/lib/containers` | `/var/lib/containers` | raw bind punched back through the `/var` overlay |
-| `/srv/<name>/var/lib/flatpak` | `/var/lib/flatpak` | raw bind, same reason |
+| `/srv/<name>/var` | `/var` | **plain bind** — no image layer worth keeping |
+| `/srv/<name>/opt` | `/opt` | **plain bind** — the image ships nothing here |
+| `/srv/<name>/var/lib/containers` | `/var/lib/containers` | ordinary subdirectory of the `/var` bind |
+| `/srv/<name>/var/lib/flatpak` | `/var/lib/flatpak` | ordinary subdirectory, same |
 | `/srv/<name>/home` | `/home` | raw bind — user data, no image content to layer |
 | `/srv/<name>/srv` | `/srv` | raw bind, empty by contract — nested-quadlet service data |
 | `/srv/<name>/container.env` | env for PID 1 | optional `MYBOX_*` runtime config |
+
+**Only `/etc` and `/usr` are overlays.** Those are the trees whose image
+content is worth layering under. `/var` and `/opt` are plain binds: the
+image ships 5 files and 5 symlinks in `/var` (the rest is empty
+directories) and nothing at all in `/opt`, and `tmpfiles.d` rebuilds what
+matters on every boot. That removes a whole mechanism — with `/var` bound
+directly, the bulk payloads are ordinary subdirectories instead of binds
+punched back through an overlay.
 
 **Nothing is seeded.** The image tree *is* the lower, so an empty upper
 is already a complete `/etc` — 116 entries on first boot. The seed
@@ -85,10 +93,11 @@ back over the overlay. podman cannot do it for us: anything it mounts
 under `/var` is shadowed the moment `/var` is overlaid.
 
 Inside, `/root` symlinks to `/var/roothome` and `/var/lib/pacman` to
-`/usr/lib/pacman`, so both ride their tree's overlay. `/run`, `/tmp`,
-`/var/tmp` are tmpfs, wiped every start — as is `/var/log/journal`,
-which podman mounts itself and which survives the `/var` overlay, so
-the journal stays RAM-backed and per-boot.
+`/usr/lib/pacman`, so both ride their tree's overlay. `/run`, `/tmp` and
+`/var/tmp` are tmpfs, wiped every start. The **journal is persistent**:
+podman puts a tmpfs at `/var/log/journal`, but the pre-init deliberately
+does not park it, so `/var` owns the path and the journal survives a
+restart — which is what you want when debugging why it restarted.
 
 **Tooling outside the container sees the IMAGE's `/etc`, not yours.** The
 overlays exist only inside the container's mount namespace, so anything
@@ -118,7 +127,9 @@ answer. `list` reads both.
 
 Factory reset is per tree and non-destructive to data:
 `rm -rf /srv/<name>/etc/diff` while stopped resets configuration and
-leaves `/home`, the flatpak apps and the container images alone. For a
+leaves `/home`, the flatpak apps and the container images alone. Only
+`/etc` and `/usr` have a `diff` to reset; `/var` and `/opt` are plain
+binds, so there you delete the path itself. For a
 single path use `mybox reset <path>` instead, and `mybox prune` to drop
 overrides that have stopped overriding anything after a rebase.
 
@@ -422,10 +433,10 @@ justfile. Slot convention: 00-49 shipped, 50-99 local additions.
 | `install-nvidia` | installs userland matching the host driver via the official `.run` (raw-device path; the CDI drop-in doesn't need it). Re-run after host driver upgrades |
 | `list [tree]` | what this box changed, by path — `changed` from the upper's files, `deleted` from its whiteouts |
 | `diff [tree]` | the same question with content, compared against the overlay's real lower |
-| `reset <path>` | stop overriding one path so it follows the image again (restart to apply) |
+| `reset <path>` | stop overriding one path so it follows the image again (restart to apply). `/etc` and `/usr` only |
 | `prune [tree] [apply]` | find overrides that no longer override anything — upper files identical to the image, whiteouts hiding files it no longer ships |
 
-Trees are `etc` (default), `var`, `usr`, `opt`.
+Overlay trees are `etc` (default) and `usr`.
 
 ## NVIDIA
 

@@ -3,8 +3,16 @@
 #
 #   image /<tree>  (lower)  +  /.mybox/<tree>/diff  (upper)  ->  /<tree>
 #
-# for etc, var, usr and opt. The image tree IS the lower, so nothing needs
-# seeding and a newer image shows through wherever you have not changed it.
+# for etc and usr — the only trees whose image content is worth layering
+# under. The image tree IS the lower, so nothing needs seeding and a newer
+# image shows through wherever you have not changed it.
+#
+# /var and /opt are plain binds instead. The image ships 5 files and 5
+# symlinks in /var (the rest is empty directories) and nothing at all in
+# /opt, and tmpfiles.d recreates what matters on every boot — so an overlay
+# there buys almost nothing and costs a whole mechanism: with /var bound
+# directly, the bulk payloads (/var/lib/{containers,flatpak}) are ordinary
+# subdirectories instead of binds punched back through an overlay.
 #
 # This is mybox's initrd. It has to run as PID 1 because systemd reads /etc
 # — machine-id, preset symlinks, masks — before any unit could mount an
@@ -20,16 +28,17 @@
 # and nothing else.
 set -uo pipefail
 
-STATE=/.mybox                 # host bind; holds every upper
+STATE=/.mybox                 # host bind; holds every upper and bind
 RUNTIME=/run/mybox            # published lowers + parked mounts
 PARK=$RUNTIME/preserved
-TREES=(etc var usr opt)
 
-# Bulk, not image-derived, and a factory reset of /var must not drop them.
-BULK=(var/lib/containers var/lib/flatpak)
+OVERLAY=(etc usr)             # image lower + persistent upper
+BIND=(var opt)                # no image content to layer under; plain bind
+MANAGED=("${OVERLAY[@]}" "${BIND[@]}")
 
-# podman gives this its own tmpfs; letting the /var overlay bury it is what
-# keeps the journal RAM-backed and per-boot, so it is deliberately not parked.
+# podman puts a tmpfs here in systemd mode. NOT parked on purpose: letting
+# /var own it is what gives the box a journal that survives a restart, which
+# is what you want when debugging why it restarted.
 NO_PARK=/var/log/journal
 
 # /sbin/init is a symlink on most distros, but guaranteed on none.
@@ -57,8 +66,10 @@ park_path() { printf '%s/%s' "$PARK" "${1//\//_}"; }
 # stays the runtime's business rather than a hardcoded guess.
 park_runtime_mounts() {
     local target inside=() re
-    # Matches any path INSIDE one of the trees: ^/(etc|var|usr|opt)/
-    re="^/($(IFS='|'; printf '%s' "${TREES[*]}"))/"
+    # Matches any path INSIDE a managed tree: ^/(etc|usr|var|opt)/
+    # Binds shadow their mountpoint exactly like overlays do, so /var/tmp
+    # needs parking whether /var is overlaid or bound.
+    re="^/($(IFS='|'; printf '%s' "${MANAGED[*]}"))/"
 
     # Snapshot first: parking changes mountinfo underneath the loop.
     while read -r _ _ _ _ target _; do
@@ -114,16 +125,16 @@ overlay_tree() {
         die "could not overlay /$tree — it would stay read-only image content"
 }
 
-# After the overlays, or the /var overlay hides them. podman cannot do this
-# for us: anything it mounts lands before this script runs.
-bind_bulk_payloads() {
-    local path
-    for path in "${BULK[@]}"; do
-        mkdir -p "$STATE/$path" "/$path" || die "cannot create /$path"
-        # Unbound these land in the /var upper, where a factory reset of
-        # /var would delete every container image and flatpak app.
-        mount --bind "$STATE/$path" "/$path" || die "could not bind /$path"
-    done
+# Plain host bind, no layering. The image's content for these trees is not
+# worth preserving and tmpfiles.d rebuilds what is needed on every boot.
+bind_tree() {
+    local tree=$1
+
+    if mountpoint -q "/$tree"; then
+        die "/$tree is already a mountpoint — something mounted it before the pre-init"
+    fi
+    mkdir -p "/$tree" "$STATE/$tree" || die "cannot create $STATE/$tree"
+    mount --bind "$STATE/$tree" "/$tree" || die "could not bind /$tree"
 }
 
 exec_init() {
@@ -138,8 +149,8 @@ mountpoint -q "$STATE" ||
     die "$STATE is not a mount — the host state bind is missing, so every write would die with the container"
 
 park_runtime_mounts
-for tree in "${TREES[@]}"; do overlay_tree "$tree"; done
+for tree in "${OVERLAY[@]}"; do overlay_tree "$tree"; done
+for tree in "${BIND[@]}"; do bind_tree "$tree"; done
 unpark_runtime_mounts
-bind_bulk_payloads
 
 exec_init "$@"

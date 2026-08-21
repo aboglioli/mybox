@@ -1,6 +1,10 @@
 # Inspect and undo what this box has changed, per overlay tree.
 #
-# Every image-owned tree is an overlay of two directories:
+# Only /etc and /usr are overlays — /var and /opt are plain host binds with
+# no image layer under them, so there is no "what changed" question to ask
+# about them: everything in them IS this box's.
+#
+# An overlay tree is two directories:
 #
 #     lower   the image's own /<tree>, published read-only by the
 #             pre-init at /run/mybox/lower/<tree> before the overlay
@@ -12,7 +16,7 @@
 # box owns it from then on — which makes the upper an exact list of local
 # changes, with nothing to diff and nothing to remember after an upgrade.
 #
-# Trees: etc (default) var usr opt
+# Trees: etc (default) usr
 #
 #   mybox list          what this box changed, by path
 #   mybox diff          the same question, with content
@@ -28,7 +32,7 @@ list tree="etc":
     #!/usr/bin/env bash
     set -uo pipefail
     upper="{{STATE}}/{{tree}}/diff"
-    [[ -d "$upper" ]] || { echo "no upper for /{{tree}} — trees are: etc var usr opt" >&2; exit 1; }
+    [[ -d "$upper" ]] || { echo "no upper for /{{tree}} — overlay trees are: etc usr" >&2; exit 1; }
     cd "$upper"
     # A deleted image file leaves an overlayfs whiteout: a character
     # device 0:0, not a regular file. Listing only -type f would report
@@ -44,22 +48,14 @@ diff tree="etc":
 
     lower="{{LOWER}}/{{tree}}"
     if [[ ! -d "$lower" ]]; then
-        echo "no published lower for /{{tree}} — trees are: etc var usr opt" >&2
+        echo "no published lower for /{{tree}} — overlay trees are: etc usr" >&2
         exit 1
-    fi
-
-    # containers/ and flatpak/ are raw binds punched through the /var
-    # overlay, not overlay content: they have no counterpart in the lower
-    # and would drown the report in thousands of image and app files.
-    exclude=()
-    if [[ "{{tree}}" == var ]]; then
-        exclude=(--exclude=containers --exclude=flatpak)
     fi
 
     # --no-dereference: /etc/mtab and the factory tree carry symlinks that
     # point at runtime paths, and following them turns every one into a
     # "No such file or directory" line that buries the real report.
-    diff -rq --no-dereference "${exclude[@]}" "$lower" "/{{tree}}"
+    diff -rq --no-dereference "$lower" "/{{tree}}"
     status=$?
     # diff exits 1 when files differ, which is the normal outcome here and
     # not an error worth failing the recipe over.
@@ -74,8 +70,9 @@ reset path:
     p="{{path}}"; p="${p#/}"
     tree="${p%%/*}"; rel="${p#*/}"
     case "$tree" in
-        etc|var|usr|opt) ;;
-        *) echo "ERROR: /$tree is not an overlay tree — use etc, var, usr or opt" >&2; exit 2;;
+        etc|usr) ;;
+        var|opt) echo "ERROR: /$tree is a plain bind, not an overlay — delete the path directly" >&2; exit 2;;
+        *) echo "ERROR: /$tree is not an overlay tree — use etc or usr" >&2; exit 2;;
     esac
     case "$rel" in ''|"$tree"|*..*) echo "ERROR: bad path: {{path}}" >&2; exit 2;; esac
     upper="{{STATE}}/$tree/diff"
@@ -96,7 +93,7 @@ prune tree="etc" apply="":
     set -uo pipefail
     upper="{{STATE}}/{{tree}}/diff"
     lower="{{LOWER}}/{{tree}}"
-    [[ -d "$upper" ]] || { echo "no upper for /{{tree}} — trees are: etc var usr opt" >&2; exit 1; }
+    [[ -d "$upper" ]] || { echo "no upper for /{{tree}} — overlay trees are: etc usr" >&2; exit 1; }
     [[ -d "$lower" ]] || { echo "no published lower for /{{tree}} — cannot tell what still overrides" >&2; exit 1; }
     dead=()
     # An upper file byte-identical to the image's: overriding nothing, but

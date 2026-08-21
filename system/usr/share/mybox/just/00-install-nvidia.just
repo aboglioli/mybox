@@ -107,15 +107,19 @@ install-nvidia:
         echo "installing nvidia userland: ${VER}"
     fi
 
-    CACHE=/var/cache/mybox/nvidia
-    mkdir -p "$CACHE"
-    RUN="${CACHE}/NVIDIA-Linux-x86_64-${VER}.run"
+    # Staged on disk under /var, never in /tmp: the .run is ~440 MB and
+    # the installer extracts ~1 GB more, which in mybox's tmpfs /tmp would
+    # all be RAM. Not kept afterwards either — the trap removes it on every
+    # exit path, so a driver bump re-downloads rather than pinning 440 MB
+    # of persistent state forever.
+    STAGE=/var/cache/mybox/nvidia
+    mkdir -p "$STAGE"
+    trap 'rm -rf -- "$STAGE"' EXIT
+    RUN="${STAGE}/NVIDIA-Linux-x86_64-${VER}.run"
     URL="https://download.nvidia.com/XFree86/Linux-x86_64/${VER}/NVIDIA-Linux-x86_64-${VER}.run"
 
-    if [[ ! -f "$RUN" ]]; then
-        echo "downloading ${URL}"
-        curl -fL --retry 3 --connect-timeout 15 -o "$RUN" "$URL"
-    fi
+    echo "downloading ${URL}"
+    curl -fL --retry 3 --connect-timeout 15 -o "$RUN" "$URL"
     chmod +x "$RUN"
 
     # --no-install-libglvnd is load-bearing: without it the .run drops

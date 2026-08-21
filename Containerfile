@@ -39,7 +39,19 @@ RUN pacman-key --init && \
     rm -rf /var/cache/pacman/pkg/* /var/log/* /tmp/* \
            /usr/share/doc /usr/share/info && \
     find /usr/share/locale -mindepth 1 -maxdepth 1 -type d \
-         ! -name 'en*' -exec rm -rf {} +
+         ! -name 'en*' -exec rm -rf {} + && \
+    rm -rf /usr/include /usr/lib/pkgconfig /usr/share/pkgconfig /usr/lib/cmake && \
+    find /usr -name '*.a' -type f -delete
+
+# Build-time-only payload, dropped above: headers, static archives and
+# pkg-config/cmake metadata are ~130 MB of a ~1.4 GB image and the image
+# ships no compiler, so nothing here can consume them. install-nvidia is
+# unaffected — it runs the .run with --no-kernel-modules, i.e. no toolchain.
+#
+# The trade: if you later install a compiler INSIDE, headers for packages
+# that are already installed are gone. `pacman -S <pkg>` reinstalls them.
+# Kept on purpose: /usr/share/i18n (locale-gen needs it to add a locale
+# later), terminfo and zoneinfo (both runtime data).
 
 # Overlay our config AFTER pacman so nothing clobbers the drop-ins.
 COPY system/etc /etc

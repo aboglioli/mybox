@@ -16,7 +16,10 @@
 # Nothing here is distro-specific: FHS paths, mounts discovered rather than
 # named, init resolved from the usual locations.
 #
-# No `set -e`: a tree that fails to assemble must still leave a bootable box.
+# Anything that would silently move or discard data is FATAL here: a box
+# that boots with an unassembled tree looks fine and loses every write to
+# it at the next restart. Better to fail the unit and say why. Diagnostics
+# (the published lowers) only warn — they cost nothing but `mybox diff`.
 set -uo pipefail
 
 STATE=/.mybox                 # the one host bind; holds every upper
@@ -36,6 +39,13 @@ INIT_CANDIDATES=(/usr/lib/systemd/systemd /lib/systemd/systemd /sbin/init /usr/s
 PRESERVED=()
 
 log() { printf 'preinit: %s\n' "$*" >&2; }
+
+# Fail the container rather than boot a box whose writes go nowhere.
+die() {
+    log "FATAL: $*"
+    log "refusing to boot: state would be lost. Fix the host bind and restart."
+    exit 1
+}
 
 contains() {
     local needle=$1 item
@@ -85,12 +95,10 @@ assemble_tree() {
     local tree=$1
 
     if mountpoint -q "/$tree"; then
-        log "/$tree is already a mountpoint, leaving it alone"
-        return
+        die "/$tree is already a mountpoint — something mounted it before the pre-init"
     fi
-    mkdir -p "/$tree" "$STATE/$tree/diff" "$STATE/$tree/work" "$RUNTIME/lower/$tree" || {
-        log "cannot create $STATE/$tree"; return
-    }
+    mkdir -p "/$tree" "$STATE/$tree/diff" "$STATE/$tree/work" "$RUNTIME/lower/$tree" ||
+        die "cannot create $STATE/$tree"
 
     if mount --bind "/$tree" "$RUNTIME/lower/$tree"; then
         mount -o remount,bind,ro "$RUNTIME/lower/$tree" ||
@@ -102,7 +110,7 @@ assemble_tree() {
     # userxattr: unprivileged whiteouts, required inside a user namespace.
     mount -t overlay "mybox-$tree" -o \
         "lowerdir=/$tree,upperdir=$STATE/$tree/diff,workdir=$STATE/$tree/work,userxattr" \
-        "/$tree" || log "could not overlay /$tree — it stays read-only image content"
+        "/$tree" || die "could not overlay /$tree — it would stay read-only image content"
 }
 
 restore_runtime_mounts() {
@@ -119,9 +127,10 @@ restore_runtime_mounts() {
 bind_bulk_payloads() {
     local path
     for path in "${BULK[@]}"; do
-        mkdir -p "$STATE/$path" "/$path" || { log "cannot create /$path"; continue; }
-        mount --bind "$STATE/$path" "/$path" ||
-            log "could not bind /$path, it will live in the /var diff"
+        mkdir -p "$STATE/$path" "/$path" || die "cannot create /$path"
+        # Not cosmetic: unbound, these land in the /var upper instead, where
+        # a factory reset of /var deletes every image and flatpak app.
+        mount --bind "$STATE/$path" "/$path" || die "could not bind /$path"
     done
 }
 
@@ -135,9 +144,8 @@ start_init() {
 }
 
 if ! mountpoint -q "$STATE"; then
-    log "$STATE is not a mount — the host state bind is missing."
-    log "Booting on the bare image: every write dies with the container."
-    start_init "$@"
+    die "$STATE is not a mount — the host state bind is missing." \
+        "Every write would die with the container."
 fi
 
 preserve_runtime_mounts

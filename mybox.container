@@ -93,15 +93,15 @@ Tmpfs=/var/tmp
 # image-owned tree, which /usr/libexec/mybox/preinit mounts before systemd
 # starts:
 #
-#   /.mybox/etc  ->  /etc      /.mybox/usr  ->  /usr
-#   /.mybox/var  ->  /var      /.mybox/opt  ->  /opt
+#   /.mybox/etc  ->  /etc  (overlay)   /.mybox/usr  ->  /usr (overlay)
+#   /.mybox/var  ->  /var  (bind)      /.mybox/opt  ->  /opt (bind)
 #
 # It is mounted at a path that is NEVER itself overlaid, because the kernel
 # refuses overlayfs as an upperdir — an upper stored inside /var stops
 # working the moment /var is an overlay.
 #
-#   /.mybox/var/lib/{containers,flatpak}   bulk payloads, bound back over
-#                                          the /var overlay by the pre-init
+#   /.mybox/var/lib/{containers,flatpak}   bulk payloads — ordinary
+#                                          subdirectories of the /var bind
 #
 # /home and /srv stay plain binds: they hold no image content to layer
 # over, and /srv is empty by contract for nested quadlets to fill.

@@ -1,4 +1,12 @@
-%wheel ALL=(ALL) ALL
+# NOPASSWD on the GROUP, not just the per-user drop-in.
+#
+# sudoers.d is read in lexical order and the LAST match wins. A per-user
+# file (mybox-user-setup writes /etc/sudoers.d/<name>) sorts before
+# "wheel" for almost every name, so a plain `%wheel ALL=(ALL) ALL` here
+# silently overrode its NOPASSWD and sudo asked for a password the
+# runtime user does not have. Granting NOPASSWD here too makes the rules
+# agree, so order stops mattering.
+%wheel ALL=(ALL) NOPASSWD: ALL
 Defaults timestamp_timeout=15
 Defaults env_reset
 Defaults secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"

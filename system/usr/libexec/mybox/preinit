@@ -1,148 +1,145 @@
 #!/usr/bin/env bash
 # PID 1 pre-init: assemble the root filesystem, then exec the real init.
 #
-#   /.mybox/<tree>/diff  +  the image's /<tree>  ->  /<tree>
+#   image /<tree>  (lower)  +  /.mybox/<tree>/diff  (upper)  ->  /<tree>
 #
-# for etc, var, usr and opt. The image tree is the lower, so nothing needs
+# for etc, var, usr and opt. The image tree IS the lower, so nothing needs
 # seeding and a newer image shows through wherever you have not changed it.
 #
-# It runs as PID 1 because systemd reads /etc — machine-id, preset symlinks,
-# masks — before any unit could mount an overlay over it.
+# This is mybox's initrd. It has to run as PID 1 because systemd reads /etc
+# — machine-id, preset symlinks, masks — before any unit could mount an
+# overlay over it, and /usr must be in place before the boot transaction is
+# built or a runtime-installed unit is a dangling enable.
 #
-# The uppers live in one bind that is never itself overlaid: the kernel
-# refuses overlayfs as an upperdir, so an upper under /var would break the
-# moment /var became an overlay.
+# Every upper lives in ONE host bind that is never itself overlaid: the
+# kernel refuses overlayfs as an upperdir, so an upper under /var would
+# break the moment /var became an overlay.
 #
-# Nothing here is distro-specific: FHS paths, mounts discovered rather than
-# named, init resolved from the usual locations.
-#
-# No `set -e`: a tree that fails to assemble must still leave a bootable box.
+# Fatal on anything that would silently discard writes. The only failure
+# tolerated is publishing the read-only lowers, which costs `mybox diff`
+# and nothing else.
 set -uo pipefail
 
-STATE=/.mybox                 # the one host bind; holds every upper
+STATE=/.mybox                 # host bind; holds every upper
 RUNTIME=/run/mybox            # published lowers + parked mounts
+PARK=$RUNTIME/preserved
 TREES=(etc var usr opt)
 
-# Large, not image-derived, and a factory reset of /var must not delete them.
+# Bulk, not image-derived, and a factory reset of /var must not drop them.
 BULK=(var/lib/containers var/lib/flatpak)
 
-# Left to the overlay on purpose: podman puts a tmpfs here, and letting /var
-# own it is what makes the journal survive container recreation.
-SKIP_PRESERVE=(/var/log/journal)
+# podman gives this its own tmpfs; letting the /var overlay bury it is what
+# keeps the journal RAM-backed and per-boot, so it is deliberately not parked.
+NO_PARK=/var/log/journal
 
-# /sbin/init is a symlink on most distros, but not guaranteed anywhere.
-INIT_CANDIDATES=(/usr/lib/systemd/systemd /lib/systemd/systemd /sbin/init /usr/sbin/init)
+# /sbin/init is a symlink on most distros, but guaranteed on none.
+INITS=(/usr/lib/systemd/systemd /lib/systemd/systemd /sbin/init /usr/sbin/init)
 
-PRESERVED=()
+parked=()
 
-log() { printf 'preinit: %s\n' "$*" >&2; }
+warn() { printf 'preinit: %s\n' "$*" >&2; }
+die()  { warn "FATAL: $*"; exit 1; }
 
-contains() {
-    local needle=$1 item
-    shift
-    for item in "$@"; do [ "$item" = "$needle" ] && return 0; done
-    return 1
-}
-
-# Where a mount is parked while its parent gets overlaid.
-parked() { printf '%s/preserved/%s' "$RUNTIME" "${1//\//_}"; }
-
-# Bind $1 onto $2, creating $2 as the same kind of thing $1 is.
+# Bind $1 onto $2, creating $2 as the same kind of object as $1.
 rebind() {
     local src=$1 dst=$2
     if [ -d "$src" ]; then mkdir -p "$dst"; else [ -e "$dst" ] || : > "$dst"; fi
     mount --bind "$src" "$dst"
 }
 
-# Whatever the runtime mounted inside a tree we overlay would vanish under
-# it: podman's /etc/{hosts,hostname,resolv.conf}, the quadlet's /var/tmp.
-# Discovered from mountinfo so the list stays the runtime's business, and
-# parked as binds rather than copies because it may still rewrite them.
-preserve_runtime_mounts() {
-    local target tree candidates=()
+# Flat, collision-free name under $PARK for an absolute path.
+park_path() { printf '%s/%s' "$PARK" "${1//\//_}"; }
 
-    # Snapshot first — the loop below mounts, which changes mountinfo.
+# Mounts the runtime placed INSIDE a tree we are about to overlay would
+# vanish under it: podman's /etc/{hosts,hostname,resolv.conf}, the quadlet's
+# /var/tmp. Park them as binds — not copies, podman may still rewrite them —
+# and put them back once the overlay is up. Read from mountinfo so the list
+# stays the runtime's business rather than a hardcoded guess.
+park_runtime_mounts() {
+    local target inside=() re
+    # Matches any path INSIDE one of the trees: ^/(etc|var|usr|opt)/
+    re="^/($(IFS='|'; printf '%s' "${TREES[*]}"))/"
+
+    # Snapshot first: parking changes mountinfo underneath the loop.
     while read -r _ _ _ _ target _; do
-        for tree in "${TREES[@]}"; do
-            [[ $target == "/$tree/"* ]] && candidates+=("$target") && break
-        done
+        [[ $target =~ $re && $target != "$NO_PARK" ]] && inside+=("$target")
     done < /proc/self/mountinfo
 
-    mkdir -p "$RUNTIME/preserved"
-    for target in "${candidates[@]}"; do
-        contains "$target" "${SKIP_PRESERVE[@]}" && continue
-        if rebind "$target" "$(parked "$target")"; then
-            PRESERVED+=("$target")
+    mkdir -p "$PARK"
+    for target in "${inside[@]}"; do
+        if rebind "$target" "$(park_path "$target")"; then
+            parked+=("$target")
         else
-            log "could not preserve $target, the overlay will hide it"
+            warn "could not park $target — the overlay will hide it"
         fi
     done
 }
 
-# Publish the pristine tree read-only before overlaying it: afterwards the
-# lower has no name left, and `mybox diff` compares against the real lower.
-assemble_tree() {
-    local tree=$1
+unpark_runtime_mounts() {
+    local target
+    for target in "${parked[@]}"; do
+        rebind "$(park_path "$target")" "$target" || warn "could not restore $target"
+        umount "$(park_path "$target")" 2>/dev/null || true
+    done
+    rm -rf "${PARK:?}"
+}
+
+# Once the overlay is mounted its lower has no name left, so publish it
+# read-only first. That is the real lower, not a copy, which is what lets
+# `mybox diff` and `mybox prune` compare against what the box actually runs.
+publish_lower() {
+    local tree=$1 pub=$RUNTIME/lower/$1
+    mkdir -p "$pub" || { warn "cannot create $pub"; return; }
+    mount --bind "/$tree" "$pub" || { warn "cannot publish /$tree"; return; }
+    mount -o remount,bind,ro "$pub" || warn "$pub stays writable"
+}
+
+overlay_tree() {
+    local tree=$1 upper=$STATE/$1/diff work=$STATE/$1/work
 
     if mountpoint -q "/$tree"; then
-        log "/$tree is already a mountpoint, leaving it alone"
-        return
+        die "/$tree is already a mountpoint — something mounted it before the pre-init"
     fi
-    mkdir -p "/$tree" "$STATE/$tree/diff" "$STATE/$tree/work" "$RUNTIME/lower/$tree" || {
-        log "cannot create $STATE/$tree"; return
-    }
+    mkdir -p "/$tree" "$upper" "$work" || die "cannot create $STATE/$tree"
 
-    if mount --bind "/$tree" "$RUNTIME/lower/$tree"; then
-        mount -o remount,bind,ro "$RUNTIME/lower/$tree" ||
-            log "$RUNTIME/lower/$tree stays writable"
-    else
-        log "cannot publish the pristine /$tree"
-    fi
+    publish_lower "$tree"
 
     # userxattr: unprivileged whiteouts, required inside a user namespace.
-    mount -t overlay "mybox-$tree" -o \
-        "lowerdir=/$tree,upperdir=$STATE/$tree/diff,workdir=$STATE/$tree/work,userxattr" \
-        "/$tree" || log "could not overlay /$tree — it stays read-only image content"
+    # It also forces redirect_dir=nofollow, so renaming a directory that
+    # exists only in the lower fails EXDEV — `mv` copies instead, but a raw
+    # rename(2) does not. The two options are mutually exclusive; userxattr
+    # is not optional here.
+    mount -t overlay "mybox-$tree" \
+        -o "lowerdir=/$tree,upperdir=$upper,workdir=$work,userxattr" "/$tree" ||
+        die "could not overlay /$tree — it would stay read-only image content"
 }
 
-restore_runtime_mounts() {
-    local target
-    for target in "${PRESERVED[@]}"; do
-        rebind "$(parked "$target")" "$target" || log "could not restore $target"
-        umount "$(parked "$target")" 2>/dev/null || true
-    done
-    rm -rf "${RUNTIME:?}/preserved"
-}
-
-# After the overlays, or /var hides them. Same reason podman cannot mount
-# these for us: everything it binds lands before we run.
+# After the overlays, or the /var overlay hides them. podman cannot do this
+# for us: anything it mounts lands before this script runs.
 bind_bulk_payloads() {
     local path
     for path in "${BULK[@]}"; do
-        mkdir -p "$STATE/$path" "/$path" || { log "cannot create /$path"; continue; }
-        mount --bind "$STATE/$path" "/$path" ||
-            log "could not bind /$path, it will live in the /var diff"
+        mkdir -p "$STATE/$path" "/$path" || die "cannot create /$path"
+        # Unbound these land in the /var upper, where a factory reset of
+        # /var would delete every container image and flatpak app.
+        mount --bind "$STATE/$path" "/$path" || die "could not bind /$path"
     done
 }
 
-start_init() {
+exec_init() {
     local init
-    for init in "${INIT_CANDIDATES[@]}"; do
+    for init in "${INITS[@]}"; do
         [ -x "$init" ] && exec "$init" "$@"
     done
-    log "FATAL: no init found in ${INIT_CANDIDATES[*]}"
-    exit 1
+    die "no init found in ${INITS[*]}"
 }
 
-if ! mountpoint -q "$STATE"; then
-    log "$STATE is not a mount — the host state bind is missing."
-    log "Booting on the bare image: every write dies with the container."
-    start_init "$@"
-fi
+mountpoint -q "$STATE" ||
+    die "$STATE is not a mount — the host state bind is missing, so every write would die with the container"
 
-preserve_runtime_mounts
-for tree in "${TREES[@]}"; do assemble_tree "$tree"; done
-restore_runtime_mounts
+park_runtime_mounts
+for tree in "${TREES[@]}"; do overlay_tree "$tree"; done
+unpark_runtime_mounts
 bind_bulk_payloads
 
-start_init "$@"
+exec_init "$@"

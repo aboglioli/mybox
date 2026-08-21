@@ -108,12 +108,27 @@ and cannot drift from what the box is really layered on:
 ```bash
 mybox diff          # /etc versus its lower — user db, ssh host keys, …
 mybox diff usr      # empty unless you installed something at runtime
-find /.mybox/etc/diff -type f    # same question, no content comparison
+mybox list          # same question, paths only, no content comparison
 ```
+
+Use `mybox list`, not a bare `find /.mybox/etc/diff -type f`: a deleted
+image file leaves a **whiteout** (a character device 0:0, not a regular
+file), so `-type f` reports every deletion as "unchanged" — the one wrong
+answer. `list` reads both.
 
 Factory reset is per tree and non-destructive to data:
 `rm -rf /srv/<name>/etc/diff` while stopped resets configuration and
-leaves `/home`, the flatpak apps and the container images alone.
+leaves `/home`, the flatpak apps and the container images alone. For a
+single path use `mybox reset <path>` instead, and `mybox prune` to drop
+overrides that have stopped overriding anything after a rebase.
+
+**The pre-init fails the container rather than boot a degraded box.** A
+missing state bind, a tree that cannot be overlaid, or a bulk payload that
+cannot be bound are all fatal: each would leave a box that looks fine and
+silently loses every write to that tree at the next restart. The unit
+fails with the reason on the console and in `journalctl -u <name>`.
+Publishing the read-only lowers is the one exception — it only powers
+`mybox diff`, so it warns and carries on.
 
 ## Quick start
 
@@ -405,7 +420,12 @@ justfile. Slot convention: 00-49 shipped, 50-99 local additions.
 | Recipe | What it does |
 |---|---|
 | `install-nvidia` | installs userland matching the host driver via the official `.run` (raw-device path; the CDI drop-in doesn't need it). Re-run after host driver upgrades |
-| `diff [tree]` | what this box changed in `/etc` (or `var`/`usr`/`opt`), compared against the overlay's real lower |
+| `list [tree]` | what this box changed, by path — `changed` from the upper's files, `deleted` from its whiteouts |
+| `diff [tree]` | the same question with content, compared against the overlay's real lower |
+| `reset <path>` | stop overriding one path so it follows the image again (restart to apply) |
+| `prune [tree] [apply]` | find overrides that no longer override anything — upper files identical to the image, whiteouts hiding files it no longer ships |
+
+Trees are `etc` (default), `var`, `usr`, `opt`.
 
 ## NVIDIA
 

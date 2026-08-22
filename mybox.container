@@ -1,4 +1,17 @@
-# mybox.container — rootful system container quadlet (minimal base).
+# mybox.container — rootful system container quadlet (shared base).
+#
+# Installed as <name>@.container.d/00-base.conf, NOT as a unit file: mybox
+# runs as two mutually exclusive INSTANCES of one template —
+#
+#   <name>@headless.service   boot-starts, no session sockets
+#   <name>@gui.service        the same box plus the host wayland/audio sockets
+#
+# — and a quadlet drop-in directory named <name>@.container.d/ is the one
+# place both instances read. The instance files themselves (mybox@headless
+# .container, mybox@gui.container) are stubs that carry only the wiring
+# that differs. %p is <name> for BOTH instances, so every path below is
+# shared automatically: same /srv/<name>, same ContainerName, same image.
+# Only one may run at a time — they mount the same overlay uppers.
 #
 # Rootful on purpose: rootless quadlets can't give this use case an own
 # LAN IP, :idmap binds, or a wide subuid range for nested rootless
@@ -11,10 +24,12 @@
 # container name and /srv/<name> state dir. NOTE: %p keeps dashes
 # literally; %P would unescape them to slashes — never use %P here.
 #
-# Install: `just install && just start` (see justfile), or copy this
-# file + a .network file + drop-ins into /etc/containers/systemd/ and
-# `systemctl daemon-reload && systemctl start mybox`. Quadlets cannot be
-# `enable`d — [Install] wires boot via the generator.
+# Install: `just install && just start` (see justfile), or copy this file
+# to /etc/containers/systemd/<name>@.container.d/00-base.conf, add a
+# .network file, the instance stubs and any drop-ins, then
+# `systemctl daemon-reload && systemctl start <name>@headless`. Quadlets
+# cannot be `enable`d — [Install] wires boot via the generator, and it
+# lives in the headless stub so only that instance boot-starts.
 #
 # COPY these files, never symlink them from /home: generators run before
 # any mount, so such a link is unreadable and NO unit gets generated.
@@ -25,7 +40,7 @@
 #   factory reset   stop → rm -rf /srv/<name>/{etc,var} → start
 
 [Unit]
-Description=%p — rootful system container (systemd PID 1)
+Description=%p (%i) — rootful system container (systemd PID 1)
 After=network-online.target
 Wants=network-online.target
 # /srv/%p may be its own filesystem; don't start before it is mounted.
@@ -166,7 +181,6 @@ ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc /srv/%p/var /srv/%p/usr /srv/%p/opt /
 # EnvironmentFile= above is fatal when absent, so guarantee it exists.
 ExecStartPre=/usr/bin/touch /srv/%p/container.env
 
-# Headless default: up before anyone logs in. GUI hosts can't do this
-# (see 10-gui.conf) and get a %p-gui.path trigger instead.
-[Install]
-WantedBy=multi-user.target
+# No [Install] here: it would apply to both instances and boot-start the
+# GUI one, whose bind sources do not exist yet. It lives in
+# mybox@headless.container instead.

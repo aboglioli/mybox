@@ -22,7 +22,7 @@ instance gets its own unit name — `mybox-test.container` →
 | File | Adds |
 |---|---|
 | `05-user.conf` | template for pinning `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` in the repo — all commented, since per-box identity belongs in `/srv/<name>/container.env`, which the quadlet loads already |
-| `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env. Also **cancels boot-start** (`[Install] WantedBy=`) — those sockets do not exist until a compositor runs; `just install` wires `<name>-gui.path` instead |
+| `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env, and the `BindsTo=` that ends the session. The one drop-in **not** shared: it installs into `<name>@gui.container.d/` and is the whole difference between the headless and GUI instances (`host/README.md`) |
 | `20-gpu.conf` | `/dev/dri`, `/dev/snd`, `/dev/input` (Intel/AMD stack) |
 | `30-nvidia.conf` | `AddDevice=nvidia.com/gpu=all` via CDI (no in-container install needed) |
 | `31-nvidia-raw.conf` | raw `/dev/nvidia*` + `mybox install-nvidia` inside (when the CDI hook fails under userns) |
@@ -41,22 +41,28 @@ instance gets its own unit name — `mybox-test.container` →
 trigger (see the repo justfile). By hand, from the repo root:
 
 ```bash
-sudo mkdir -p /etc/containers/systemd/mybox.container.d
-sudo cp container/10-gui.conf container/20-gpu.conf container/30-nvidia.conf \
-        /etc/containers/systemd/mybox.container.d/
+sudo mkdir -p /etc/containers/systemd/mybox@.container.d
+sudo cp container/20-gpu.conf container/30-nvidia.conf \
+        /etc/containers/systemd/mybox@.container.d/
 sudo systemctl daemon-reload
-sudo systemctl restart mybox.service
+sudo systemctl restart mybox@headless.service
 ```
+
+`mybox@.container.d/` — with the `@` — is the shared drop-in dir both
+instances read. `10-gui.conf` is the exception: it belongs to
+`mybox@gui.container.d/` alone, because copying it into the shared dir
+would boot-start a container whose sockets do not exist yet. See
+`host/README.md`.
 
 **Copy, never symlink** — least of all into a working tree under `/home`.
 The quadlet generator runs before any filesystem is mounted, so a link
 there resolves to nothing and NO unit is generated at all (`Unit
-mybox.service could not be found`). See "Start model" in the repo README.
+mybox@headless.service could not be found`). See "Start model" in the repo README.
 
 ## Verifying a drop-in applied
 
 ```bash
-systemctl cat mybox.service     # drop-ins are merged inline
+systemctl cat mybox@gui.service # drop-ins are merged inline
 /usr/lib/systemd/system-generators/podman-system-generator --dryrun
 ```
 

@@ -1,25 +1,29 @@
-# Starts mybox once the desktop session is ready (GUI hosts only).
+# Hands mybox over to its GUI instance once the desktop session is ready
+# (GUI hosts only). The wayland socket appearing means home decrypted,
+# user logged in, compositor up.
 #
-# 10-gui.conf binds host session sockets that only exist once a compositor
-# runs, so a GUI host can't boot-start; that drop-in cancels the boot
-# wiring and this unit replaces it. The wayland socket appearing means
-# home decrypted, user logged in, compositor up.
+# Nothing starts the container here — <name>@headless.service is already
+# running from boot. This only swaps which instance holds the box:
+# starting <name>@gui.service conflicts headless out, and when the session
+# ends the gui instance's OnSuccess= hands it back. That stop also re-arms
+# this unit, so the next login swaps again.
 #
 # Install: cp to /etc/systemd/system/ and `systemctl enable --now`.
 # `just install` does it for you. Adjust PathExists= for your uid and
 # compositor (wayland-0 on GNOME/KDE), Unit= for a renamed instance.
 #
-# Fires once per boot. Re-login does NOT re-attach the sockets — a bind
-# pins the inode, so run `just restart` after logging back in.
+# A compositor restart WITHIN one session is not caught: the runtime dir
+# stays mounted, so the gui instance keeps running and a .path unit does
+# not re-check while the unit it triggers is active. Run `just restart`.
 # See host/README.md.
 
 [Unit]
-Description=Start mybox when the desktop session is ready
+Description=Hand mybox to its GUI instance when the desktop session is ready
 Documentation=https://github.com/aboglioli/mybox
 
 [Path]
 PathExists=/run/user/1000/wayland-1
-Unit=mybox.service
+Unit=mybox@gui.service
 
 [Install]
 WantedBy=multi-user.target

@@ -1,0 +1,29 @@
+# mybox@gui — the same box, plus the host session sockets.
+#
+# A stub on purpose: the whole definition is shared, in
+# <name>@.container.d/00-base.conf (the repo's mybox.container). The
+# sockets themselves come from <name>@gui.container.d/10-gui.conf, which
+# is the ONLY drop-in this instance has that headless does not.
+#
+# Never boot-started: it has no [Install], because its bind sources are
+# session sockets that do not exist until a compositor runs, and podman
+# hard-fails a start on a missing bind source. <name>-gui.path starts it
+# when the wayland socket appears.
+#
+# Nothing here names the instance literally — %p is <name> for every
+# instance of the template, so a renamed box wires itself.
+
+[Unit]
+# Only one instance may run: they share /srv/<name>, so two systemd PID 1s
+# would be writing the same overlay uppers. After= makes the handover
+# ordered rather than racing.
+Conflicts=%p@headless.service
+After=%p@headless.service
+
+# Give the box back when the session ends. The 10-gui volumes make quadlet
+# emit RequiresMountsFor= on /run/user/<uid>, so logging out unmounts the
+# runtime dir and stops this instance; OnSuccess= then brings headless
+# back. OnFailure= covers the other direction: if the GUI instance cannot
+# start, the box still ends up running rather than down.
+OnSuccess=%p@headless.service
+OnFailure=%p@headless.service

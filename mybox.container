@@ -168,6 +168,17 @@ Network=mybox-nat.network
 
 AutoUpdate=registry
 
+# The workload is a full systemd PID 1 — journald flush, nested podman
+# containers, unit stop jobs — and podman's 10s default expires long before
+# that finishes, so every stop ends in SIGKILL. That is not just untidy: the
+# unit lands in `failed`, which trips the gui instance's OnFailure= and
+# spuriously starts the headless one on every ordinary restart.
+#
+# Quadlet does NOT derive systemd's own stop timeout from this — it stays
+# at 15s and would kill the unit while podman is still waiting — so
+# TimeoutStopSec= in [Service] has to be raised to match.
+StopTimeout=45
+
 [Service]
 Restart=on-failure
 TimeoutStartSec=600
@@ -180,6 +191,10 @@ TimeoutStartSec=600
 ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc /srv/%p/var /srv/%p/usr /srv/%p/opt /srv/%p/home /srv/%p/srv
 # EnvironmentFile= above is fatal when absent, so guarantee it exists.
 ExecStartPre=/usr/bin/touch /srv/%p/container.env
+
+# Must exceed StopTimeout= above (podman's own wait), or systemd kills the
+# unit first and the 45s is never actually available.
+TimeoutStopSec=60
 
 # No [Install] here: it would apply to both instances and boot-start the
 # GUI one, whose bind sources do not exist yet. It lives in

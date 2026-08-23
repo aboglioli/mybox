@@ -12,5 +12,22 @@
 # when a compositor appears, and that instance hands the box back here
 # when the session ends.
 
+[Unit]
+# Only take the box when there is no desktop session to take it FOR.
+#
+# @gui hands back with OnSuccess=, and systemd fires that on any stop —
+# including the stop half of `systemctl restart mybox@gui`. Without this
+# condition every restart of the GUI instance wakes this one, which then
+# collides on the shared ContainerName: quadlet adds --replace, so the two
+# delete each other's container, exit 137, and Restart= turns it into a
+# loop. The socket is the same signal <name>-gui.path watches, so the two
+# always agree on who should be holding the box.
+#
+# `!` inverts: the unit runs only when the path is ABSENT. A headless host
+# has no such socket ever, so this is always true there and costs nothing.
+# Keep the path in sync with <name>-gui.path and container/10-gui.conf;
+# `just install` substitutes it from MYBOX_WAYLAND.
+ConditionPathExists=!/run/user/1000/wayland-1
+
 [Install]
 WantedBy=multi-user.target

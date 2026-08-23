@@ -40,6 +40,13 @@
 #   factory reset   stop → rm -rf /srv/<name>/{etc,var} → start
 
 [Unit]
+# Bound the damage if the two instances ever do overlap. They share
+# ContainerName, so each one's --replace deletes the other's container;
+# the loser exits 137, Restart= brings it back, and at the 100ms default
+# that becomes a self-sustaining loop. Three tries a minute lets a genuine
+# crash recover while a fight burns itself out and stays down, visibly.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 Description=%p (%i) — rootful system container (systemd PID 1)
 After=network-online.target
 Wants=network-online.target

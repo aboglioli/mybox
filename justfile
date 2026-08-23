@@ -90,7 +90,10 @@ install *dropins:
     # The shared definition is a DROP-IN, not a unit file: a drop-in dir is
     # the only thing two instances of a template both read.
     sudo install -m0644 "$SRC/mybox.container" "$BASE/00-base.conf"
-    sudo install -m0644 "$SRC/mybox@headless.container" "$QD/$NAME@headless.container"
+    # Same host-specific socket as the .path unit and 10-gui.conf.
+    sed -e "s|^ConditionPathExists=!.*|ConditionPathExists=!{{mybox_wayland}}|" \
+        "$SRC/mybox@headless.container" | sudo tee "$QD/$NAME@headless.container" >/dev/null
+    sudo chmod 0644 "$QD/$NAME@headless.container"
     sudo install -m0644 "$SRC/container/{{mybox_netfile}}" "$QD/{{mybox_netfile}}"
     # Point the container at the network we just installed. Without this,
     # MYBOX_NETFILE would only change which FILE is installed while
@@ -221,7 +224,9 @@ sync:
     [[ -e "$BASE/00-base.conf" ]] || { echo "ERROR: $NAME is not installed — run: just install" >&2; exit 1; }
     refresh() { sudo rm -f "$2"; sudo install -m0644 "$1" "$2"; echo "    refreshed: ${2#$QD/}"; }
     refresh "$SRC/mybox.container" "$BASE/00-base.conf"
-    refresh "$SRC/mybox@headless.container" "$QD/$NAME@headless.container"
+    sed -e "s|^ConditionPathExists=!.*|ConditionPathExists=!{{mybox_wayland}}|" \
+        "$SRC/mybox@headless.container" | sudo tee "$QD/$NAME@headless.container" >/dev/null
+    echo "    refreshed: $NAME@headless.container"
     for f in "$BASE"/*.conf; do
       [[ -e "$f" ]] || continue
       b=$(basename "$f" .conf)
@@ -248,13 +253,28 @@ sync:
 # Re-copies first, so edit-then-restart applies the edit.
 #
 # Recreate against the current image + drop-ins.
-# try-restart hits only what is actually running, so this is correct
-# whichever instance holds the box — and it is the way to pick up a new
-# wayland socket after restarting the compositor within one session.
+# Restarts ONLY the instance that currently holds the box. Never both:
+# they share ContainerName, and quadlet adds --replace, so a second
+# instance starting while the first is up deletes the first's container
+# out from under it. That marks the loser failed, Restart=on-failure
+# brings it back 100ms later, it replaces the winner in turn, and the two
+# destroy each other in a loop until something is killed by hand.
+#
+# This is also how you pick up a new wayland socket after restarting the
+# compositor within one session.
 #
 # Re-copies first, so edit-then-restart applies the edit.
 restart: sync
-    sudo systemctl try-restart "{{gui}}" "{{headless}}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for u in "{{gui}}" "{{headless}}"; do
+      if [[ "$(systemctl is-active "$u")" == active ]]; then
+        echo ">>> restarting $u"
+        sudo systemctl restart "$u"
+        exit 0
+      fi
+    done
+    echo ">>> nothing running — use: just start"
 
 # Unit state, container state, LAN IP.
 status:

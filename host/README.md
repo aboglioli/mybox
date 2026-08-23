@@ -40,8 +40,36 @@ Every arrow is a systemd directive; nothing polls and nothing is scripted.
 - `Conflicts=%p@headless.service` + `After=` — ordered handover, never both.
 - `BindsTo=run-user-1000.mount` (in `10-gui.conf`) — ends the GUI instance
   with the session.
-- `OnSuccess=%p@headless.service` — gives the box back. `OnFailure=` too,
-  so a GUI instance that cannot start still leaves the box running.
+- `OnSuccess=%p@headless.service` — gives the box back. `OnFailure=` too.
+- `ConditionPathExists=!…/wayland-1` (in `<name>@headless.container`) — the
+  headless instance only takes the box when there is no session to take it
+  for. This one is not optional; see below.
+
+### Why the headless instance carries a condition
+
+`OnSuccess=` fires whenever the unit enters inactive — and systemd counts
+the stop half of `systemctl restart` as exactly that. So restarting the GUI
+instance wakes the headless one, mid-restart, while a session is still up.
+
+That would be harmless if the two were independent, but they share
+`ContainerName`, and quadlet adds `--replace`: whichever starts second
+deletes the other's container. The loser exits 137, `Restart=on-failure`
+brings it back 100ms later, it replaces the winner in turn, and the pair
+destroy each other until something is killed by hand. Observed directly —
+restarts went from 1s to 47s and ended with the unit "active" and no
+container at all.
+
+The condition breaks it: during a restart the socket is still there, so the
+headless instance is skipped and the GUI instance restarts alone. At logout
+the socket is gone, so it starts for real.
+
+**Consequence worth knowing:** if the GUI instance cannot start while a
+session exists, the headless one is skipped too and the box stays down
+rather than silently running without your sockets. `Restart=on-failure`
+and the `.path` retry; `StartLimitBurst=3` stops it thrashing.
+
+**Never start or restart both instances at once** — `just restart` only
+touches the one that currently holds the box, and that is deliberate.
 
 ### Why `BindsTo=` is written out by hand
 

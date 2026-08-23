@@ -1,0 +1,16 @@
+# mybox@headless — the box with no desktop session attached.
+#
+# A stub on purpose: the whole definition is shared, in
+# <name>@.container.d/00-base.conf (the repo's mybox.container). This file
+# carries only what makes the headless instance different, which is the
+# boot wiring — and the fact that it has no session sockets, by having no
+# drop-in dir of its own.
+#
+# This is the instance that boot-starts. It needs nothing from a user
+# session, so it is up before anyone logs in and stays up on a headless
+# box forever. On a GUI box <name>-gui.path swaps to <name>@gui.service
+# when a compositor appears, and that instance hands the box back here
+# when the session ends.
+
+[Install]
+WantedBy=multi-user.target

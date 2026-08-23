@@ -153,7 +153,7 @@ just install        # symlink quadlet + network + default drop-ins
 just build          # OPTIONAL: local build over the published ghcr
                     # reference, into the ROOTFUL store; skip it and
                     # the quadlet pulls ghcr.io/aboglioli/mybox instead
-just start          # systemctl start mybox.service
+just start          # systemctl start mybox@headless (or @gui)
 just status
 just login          # full PAM session as the runtime user
 ```
@@ -185,8 +185,8 @@ part of `mybox.container` and always on.
 the very start of the boot transaction — before `local-fs.target`, before
 any `.mount` unit — so a symlink from `/etc/containers/systemd` into a tree
 under `/home` is unreadable exactly when it matters. The generator then
-emits **nothing**, and `systemctl status mybox.service` says `Unit
-mybox.service could not be found` — no unit at all, rather than a failed
+emits **nothing**, and `systemctl status mybox@headless.service` says
+`Unit … could not be found` — no unit at all, rather than a failed
 one. The familiar workaround (`daemon-reload` after login, then start by
 hand, every boot) is the symptom.
 
@@ -197,37 +197,54 @@ TPM2 support (`homectl` has no `--tpm2-device`),
 the fix. `just sync` pushes later repo edits to `/etc`, and `just restart`
 runs it first.
 
-**The start trigger follows the drop-in set:**
+**One template, two mutually exclusive instances:**
 
-| Host shape | Boot wiring | Trigger |
+| Unit | Sockets | Started by |
 |---|---|---|
-| **headless** (no `10-gui`) | `WantedBy=multi-user.target` | starts at boot; up before anyone logs in |
-| **GUI** (`10-gui`) | cancelled by `10-gui.conf` | `host/mybox-gui.path` — starts it when the wayland socket appears |
+| `<name>@headless.service` | none | boot (`WantedBy=multi-user.target`) |
+| `<name>@gui.service` | host wayland / pipewire / pulse | `host/mybox-gui.path`, when the wayland socket appears |
 
-A GUI host can't boot-start: `10-gui.conf` binds sockets under
-`/run/user/<uid>` that don't exist until a compositor runs, and podman
-hard-fails a missing bind source (`statfs …: no such file or directory`).
-So it carries `[Install] WantedBy=` (an empty assignment resets the list,
-so the generator emits no `multi-user.target.wants/` symlink) and
-`host/mybox-gui.path` triggers on the socket instead — which means home
-decrypted, logged in, and compositor up. It's a real file: `just install`
-copies it and retargets `PathExists=`/`Unit=` from
-`MYBOX_WAYLAND`/`MYBOX_CONTAINER`, or `cp` it by hand (`host/README.md`).
+They are the same box. `%p` is `<name>` for both instances, so both use
+`/srv/<name>`, both are `ContainerName=<name>`, and both read every
+drop-in in `<name>@.container.d/` — which is where `mybox.container`
+itself installs, as `00-base.conf`. A quadlet drop-in directory is the
+only thing two instances of a template both read, so that is where the
+shared definition has to live; the two `.container` files are stubs
+carrying just the wiring that differs. Only one may run at a time — two
+systemd PID 1s over the same overlay uppers would corrupt them.
 
-Drop `10-gui` and boot-start returns by itself. Two inherent limits when
-using it:
+`10-gui.conf` is the single unshared drop-in. Its bind sources are session
+sockets that don't exist until a compositor runs, and podman hard-fails a
+missing bind source (`statfs …: no such file or directory`), so it goes
+into `<name>@gui.container.d/` and never boot-starts.
 
-- **Re-login does not re-attach the sockets** — a bind pins the inode, so
-  the next session's new socket is invisible to the running container.
-  `just restart` after re-logging in.
-- **An ssh-only login never starts it** — no compositor, no socket. Such a
-  box wants the headless set.
+The handover is all systemd directives — nothing polls, nothing is
+scripted:
+
+```
+boot     @headless up
+login    .path fires -> @gui starts -> Conflicts= stops @headless
+logout   /run/user/<uid> unmounts -> BindsTo= stops @gui
+         -> OnSuccess= starts @headless -> .path re-arms
+```
+
+One catch worth knowing: quadlet's own `RequiresMountsFor=` does *not*
+give you that logout edge — systemd grants a mount discovered only in
+`/proc/self/mountinfo` an `After=` but no `Requires=`, so `10-gui.conf`
+writes `BindsTo=run-user-1000.mount` out by hand. Without it, re-login
+inherits dead sockets.
+
+Restarting the compositor *within* one session is the one case this does
+not catch (the runtime dir stays mounted, and a `.path` unit does not
+re-check while its unit is active): run `just restart`. Drop `10-gui` and
+`just install` removes the GUI instance entirely; an ssh-only login then
+needs nothing, because the box is already up. See `host/README.md`.
 
 Check what the generator will really do:
 
 ```bash
 sudo /usr/lib/systemd/system-generators/podman-system-generator /tmp/g /tmp/g /tmp/g
-find /tmp/g     # multi-user.target.wants/mybox.service present == boot start
+find /tmp/g     # multi-user.target.wants/mybox@headless.service == boot start
 ```
 
 ## Runtime user + SSH keys

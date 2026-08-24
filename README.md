@@ -266,10 +266,43 @@ uses `wayland-0` (GNOME/KDE).
 
 Nothing else names a uid. `mybox@gui.path` takes its target from its own
 filename and watches `/run/user/*/wayland-*`; `mybox@headless.container`
-tests the same glob. Renaming the box is likewise pure file naming —
-`foo@headless.container`, `foo@gui.container`, `foo@.container.d/`,
-`foo@gui.path` — because `%p` resolves to `foo` everywhere, including
-inside `Conflicts=` and `OnSuccess=`.
+tests the same glob.
+
+### Running it under another name
+
+Renaming the box is **pure file naming — no file content changes at all**.
+`%p` resolves to the new name everywhere, including inside `Conflicts=`,
+`OnSuccess=` and every `/srv/%p` path, and the `.path` unit takes its
+target from its own filename. To run `services` instead of `mybox`:
+
+| This file | …installs under the new name as |
+|---|---|
+| `mybox.container` | `services@.container.d/00-base.conf` |
+| shared drop-ins | `services@.container.d/` |
+| `container/10-gui.conf` | `services@gui.container.d/` |
+| `container/10-gui-guard.conf` | `services@headless.container.d/` |
+| `mybox@headless.container` | `services@headless.container` |
+| `mybox@gui.container` | `services@gui.container` |
+| `host/mybox@gui.path` | `/etc/systemd/system/services@gui.path` |
+
+The `.network` file is the exception: it keeps its own name, because the
+network is a separate object several boxes can share.
+
+`MYBOX_CONTAINER=services just install` does all of it. Verified by
+installing a second box as `tester` next to `mybox` and running both at
+once — every installed file was byte-identical to the `mybox` one, and the
+two came up as independent machines:
+
+```
+mybox   hostname=mybox   ip=10.89.0.2/24  state=/srv/mybox
+tester  hostname=tester  ip=10.89.0.4/24  state=/srv/tester
+```
+
+**One collision to know about if you run two at the same time:**
+`85-publish-ssh.conf` publishes host port 2222, so a second box needs that
+drop-in dropped or edited to a free port. Nothing else clashes — separate
+`/srv`, separate container names, and the shared podman network hands out
+separate IPs.
 
 ### Verifying
 

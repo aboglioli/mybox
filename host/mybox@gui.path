@@ -1,0 +1,35 @@
+# Hands mybox over to its GUI instance once the desktop session is ready
+# (GUI hosts only). A wayland socket appearing means home decrypted, user
+# logged in, compositor up.
+#
+# Nothing starts the container here — <name>@headless.service is already
+# running from boot. This only swaps which instance holds the box: starting
+# <name>@gui.service conflicts headless out, and when the session ends the
+# gui instance hands it back. That stop also re-arms this unit, so the next
+# login swaps again.
+#
+# NOTHING IN THIS FILE IS HOST-SPECIFIC, by design — copy it as it is.
+#   * the name comes from the FILENAME: a .path unit with no Unit= triggers
+#     the service of the same name, so mybox@gui.path starts
+#     mybox@gui.service, and renaming the file to foo@gui.path follows.
+#   * the glob avoids naming a uid or a compositor's socket number
+#     (niri/sway wayland-1, GNOME/KDE wayland-0). It is the same glob as
+#     the ConditionPathExistsGlob= in <name>@headless.container, so the two
+#     instances always agree on who should be holding the box.
+#
+# Install: cp to /etc/systemd/system/ and `systemctl enable --now`.
+#
+# A compositor restart WITHIN one session is not caught: the runtime dir
+# stays mounted, so the gui instance keeps running and a .path unit does
+# not re-check while the unit it triggers is active. Run `just restart`,
+# or `systemctl restart mybox@gui`. See host/README.md.
+
+[Unit]
+Description=Hand mybox to its GUI instance when the desktop session is ready
+Documentation=https://github.com/aboglioli/mybox
+
+[Path]
+PathExistsGlob=/run/user/*/wayland-*
+
+[Install]
+WantedBy=multi-user.target

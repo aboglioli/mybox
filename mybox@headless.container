@@ -8,7 +8,7 @@
 #
 # This is the instance that boot-starts. It needs nothing from a user
 # session, so it is up before anyone logs in and stays up on a headless
-# box forever. On a GUI box <name>-gui.path swaps to <name>@gui.service
+# box forever. On a GUI box <name>@gui.path swaps to <name>@gui.service
 # when a compositor appears, and that instance hands the box back here
 # when the session ends.
 
@@ -20,14 +20,18 @@
 # condition every restart of the GUI instance wakes this one, which then
 # collides on the shared ContainerName: quadlet adds --replace, so the two
 # delete each other's container, exit 137, and Restart= turns it into a
-# loop. The socket is the same signal <name>-gui.path watches, so the two
+# loop. The socket is the same signal <name>@gui.path watches, so the two
 # always agree on who should be holding the box.
 #
 # `!` inverts: the unit runs only when the path is ABSENT. A headless host
-# has no such socket ever, so this is always true there and costs nothing.
-# Keep the path in sync with <name>-gui.path and container/10-gui.conf;
-# `just install` substitutes it from MYBOX_WAYLAND.
-ConditionPathExists=!/run/user/1000/wayland-1
+# never has such a socket, so this is always true there and costs nothing.
+#
+# Glob, not a literal path, so this file needs no per-host editing at all —
+# no uid, no compositor-specific socket number. It pairs with the identical
+# glob in <name>@gui.path, so the two always agree on who holds the box.
+# On a machine where a SECOND user's graphical session should not hand this
+# box over, narrow it to that user's uid.
+ConditionPathExistsGlob=!/run/user/*/wayland-*
 
 [Install]
 WantedBy=multi-user.target

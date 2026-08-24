@@ -174,7 +174,7 @@ the box has a GUI; see **Start model** below.
 | `just login [user]` | full PAM/logind session (`login -f`) |
 
 Justfile knobs (env vars): `MYBOX_IMAGE`, `MYBOX_CONTAINER`,
-`MYBOX_USERNAME`, `MYBOX_NETFILE`, `MYBOX_DROPINS`, `MYBOX_WAYLAND`. Everything else —
+`MYBOX_USERNAME`, `MYBOX_DROPINS`. Everything else —
 network, GUI, GPU, devices, capabilities, runtime user — is a drop-in
 in `container/` (see `container/README.md`). Persistence is not: it is
 part of `mybox.container` and always on.
@@ -202,7 +202,7 @@ runs it first.
 | Unit | Sockets | Started by |
 |---|---|---|
 | `<name>@headless.service` | none | boot (`WantedBy=multi-user.target`) |
-| `<name>@gui.service` | host wayland / pipewire / pulse | `host/mybox-gui.path`, when the wayland socket appears |
+| `<name>@gui.service` | host wayland / pipewire / pulse | `host/mybox@gui.path`, when a wayland socket appears |
 
 They are the same box. `%p` is `<name>` for both instances, so both use
 `/srv/<name>`, both are `ContainerName=<name>`, and both read every
@@ -312,7 +312,8 @@ kernel rule, not a mybox choice: **the host and the container cannot talk
 to each other** over macvlan. Everything else on the LAN can. Drop
 `85-publish-ssh.conf` when using it.
 
-Switch with `MYBOX_NETFILE=mybox-lan.network just install`, then
+Switch by editing the `Network=` line in `mybox.container` and re-running
+`just install` (the recipe reads the netfile out of that line), then
 `just restart`. Pin the address across recreations with
 `80-static-ip.conf` (static IPAM) or `81-static-mac.conf` (stable DHCP
 lease).

@@ -41,7 +41,7 @@ Every arrow is a systemd directive; nothing polls and nothing is scripted.
 - `BindsTo=run-user-1000.mount` (in `10-gui.conf`) — ends the GUI instance
   with the session.
 - `OnSuccess=%p@headless.service` — gives the box back. `OnFailure=` too.
-- `ConditionPathExistsGlob=!/run/user/*/wayland-*` (in `<name>@headless.container`) — the
+- `ConditionPathExistsGlob=!/run/user/*/wayland-*` (in `container/10-gui-guard.conf`, installed to `<name>@headless.container.d/`) — the
   headless instance only takes the box when there is no session to take it
   for. This one is not optional; see below.
 
@@ -62,6 +62,11 @@ container at all.
 The condition breaks it: during a restart the socket is still there, so the
 headless instance is skipped and the GUI instance restarts alone. At logout
 the socket is gone, so it starts for real.
+
+It lives in `10-gui-guard.conf` rather than in the headless stub because it
+belongs to the GUI feature. On a headless-only box there is no GUI instance
+to hold the box, so the same condition would stop mybox starting at all on
+any machine that runs a desktop session.
 
 **Consequence worth knowing:** if the GUI instance cannot start while a
 session exists, the headless one is skipped too and the box stays down

@@ -77,9 +77,12 @@ install *dropins:
     # not exist at boot. QLIST is the shared set; GUI adds the instance.
     GUI=0; QLIST=""
     for d in $LIST; do
-      if [[ "$d" == "10-gui" ]]; then GUI=1; else QLIST="$QLIST $d"; fi
+      if [[ "$d" == "10-gui" ]]; then GUI=1
+      elif [[ "$d" == "10-gui-guard" ]]; then :   # implied by 10-gui
+      else QLIST="$QLIST $d"; fi
     done
     BASE="$QD/$NAME@.container.d"; GUID="$QD/$NAME@gui.container.d"
+    HEADD="$QD/$NAME@headless.container.d"
     sudo mkdir -p "$BASE"
     # Superseded by the two instances; a leftover would start a third
     # container on the same /srv state.
@@ -126,6 +129,10 @@ install *dropins:
       sudo rm -f "$QD/$NAME@gui.container" "$GUID/10-gui.conf"
       sudo install -m0644 "$SRC/mybox@gui.container" "$QD/$NAME@gui.container"
       sudo install -m0644 "$SRC/container/10-gui.conf" "$GUID/10-gui.conf"
+      # Guards the OTHER instance; ships with this feature, never without.
+      sudo mkdir -p "$HEADD"
+      sudo rm -f "$HEADD/10-gui-guard.conf"
+      sudo install -m0644 "$SRC/container/10-gui-guard.conf" "$HEADD/10-gui-guard.conf"
       # Nothing to substitute: the .path takes its target from its own
       # filename and watches a glob, so it is correct as copied.
       sudo rm -f "/etc/systemd/system/$NAME@gui.path"
@@ -144,7 +151,7 @@ install *dropins:
         sudo systemctl disable --now "$NAME@gui.path" "$NAME-gui.path" 2>/dev/null || true
         sudo systemctl stop "$NAME@gui.service" 2>/dev/null || true
         sudo rm -f "/etc/systemd/system/$NAME@gui.path" "/etc/systemd/system/$NAME-gui.path" "$QD/$NAME@gui.container"
-        sudo rm -rf "$GUID"
+        sudo rm -rf "$GUID" "$HEADD"
       fi
       echo "    instances: $NAME@headless only (boot-start)"
     fi
@@ -167,12 +174,24 @@ net-reset:
     name=$(sed -n 's/^NetworkName=//p' "{{mybox_dir}}/container/$NETFILE")
     netunit="$(basename "$NETFILE" .network)-network.service"
     echo ">>> rebuilding podman network '$name' from $NETFILE"
-    sudo systemctl stop "{{gui}}" "{{headless}}" || true
+    # Same order as `just stop`, and for the same reason: stopping @gui on
+    # its own hands the box straight back via OnSuccess=, and the returning
+    # instance pulls the network unit up again — which is precisely what has
+    # to stay down here. Disarm the trigger first so a live session cannot
+    # re-trigger @gui mid-rebuild.
+    sudo systemctl stop "{{mybox_name}}@gui.path" 2>/dev/null || true
+    sudo systemctl stop "{{gui}}" 2>/dev/null || true
+    sudo systemctl stop "{{headless}}" 2>/dev/null || true
     # The generated network unit is RemainAfterExit=yes, so it stays active
     # after creating the network and would NOT re-run: deleting the network
     # underneath it just leaves the container starting against nothing.
     sudo systemctl stop "$netunit" || true
     sudo podman network rm -f "$name" 2>/dev/null || true
+    # Guard the ordering above rather than trusting it: an active unit here
+    # means the network will NOT be recreated and the container would start
+    # against nothing.
+    [[ "$(systemctl is-active "$netunit")" != active ]] || {
+      echo "ERROR: $netunit is still active; the network would not be rebuilt" >&2; exit 1; }
     # Clear the start-rate limit a failed attempt may have tripped.
     sudo systemctl reset-failed "{{gui}}" "{{headless}}" "$netunit" 2>/dev/null || true
     just start
@@ -193,9 +212,23 @@ start:
       # probe here.
       sudo systemctl start "{{mybox_name}}@gui.path"
     fi
-    # Skipped by ConditionPathExistsGlob= when a session is up and the
-    # trigger above has taken the box.
-    sudo systemctl start "{{headless}}"
+    # With a session up the trigger has already taken the box, and this
+    # start is then either skipped by ConditionPathExistsGlob= or cancelled
+    # by Conflicts=. Both are the CORRECT outcome and both make systemctl
+    # exit non-zero, so judge by what ends up holding the box, not by this
+    # exit status.
+    sudo systemctl start "{{headless}}" || true
+    for _ in $(seq 30); do
+      for u in "{{gui}}" "{{headless}}"; do
+        if [[ "$(systemctl is-active "$u")" == active ]]; then
+          echo ">>> $u holds the box"
+          exit 0
+        fi
+      done
+      sleep 1
+    done
+    echo "ERROR: neither instance started - see: just logs" >&2
+    exit 1
 
 # Sequential and gui-first on purpose: @gui carries OnSuccess=@headless, so
 # stopping it hands the box back, and @headless has to be stopped after
@@ -236,6 +269,7 @@ sync:
     if [[ -e "$QD/$NAME@gui.container" ]]; then
       refresh "$SRC/mybox@gui.container" "$QD/$NAME@gui.container"
       refresh "$SRC/container/10-gui.conf" "$GUID/10-gui.conf"
+      refresh "$SRC/container/10-gui-guard.conf" "$QD/$NAME@headless.container.d/10-gui-guard.conf"
       refresh "$SRC/host/mybox@gui.path" "/etc/systemd/system/$NAME@gui.path"
     fi
     sudo systemctl daemon-reload

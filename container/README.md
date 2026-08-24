@@ -23,6 +23,7 @@ instance gets its own unit name — `mybox-test.container` →
 |---|---|
 | `05-user.conf` | template for pinning `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` in the repo — all commented, since per-box identity belongs in `/srv/<name>/container.env`, which the quadlet loads already |
 | `10-gui.conf` | host wayland / pipewire / pulse sockets → `/mnt/host` + env, and the `BindsTo=` that ends the session. The one drop-in **not** shared: it installs into `<name>@gui.container.d/` and is the whole difference between the headless and GUI instances (`host/README.md`) |
+| `10-gui-guard.conf` | the other half of `10-gui`: installs into `<name>@headless.container.d/` and keeps the headless instance from waking during a GUI restart. Shipped only alongside `10-gui` — on its own it would stop a headless box starting whenever a desktop session is running |
 | `20-gpu.conf` | `/dev/dri`, `/dev/snd`, `/dev/input` (Intel/AMD stack) |
 | `30-nvidia.conf` | `AddDevice=nvidia.com/gpu=all` via CDI (no in-container install needed) |
 | `31-nvidia-raw.conf` | raw `/dev/nvidia*` + `mybox install-nvidia` inside (when the CDI hook fails under userns) |

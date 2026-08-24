@@ -193,16 +193,21 @@ convenience, never a requirement.
 | `mybox.container` | `/etc/containers/systemd/<name>@.container.d/00-base.conf` |
 | `container/05-user.conf` *(and any other shared drop-in)* | `/etc/containers/systemd/<name>@.container.d/` |
 | `container/10-gui.conf` | `/etc/containers/systemd/<name>@gui.container.d/` |
+| `container/10-gui-guard.conf` | `/etc/containers/systemd/<name>@headless.container.d/` |
 | `mybox@headless.container` | `/etc/containers/systemd/` |
 | `mybox@gui.container` | `/etc/containers/systemd/` |
 | `container/mybox-nat.network` *(the file named by `Network=`)* | `/etc/containers/systemd/` |
 | `host/mybox@gui.path` | `/etc/systemd/system/` |
 
-Two renames carry meaning. `mybox.container` becomes **`00-base.conf`
+Three placements carry meaning. `mybox.container` becomes **`00-base.conf`
 inside the shared drop-in directory**, because a drop-in dir is the only
-thing two instances of a template both read. And `10-gui.conf` goes to the
+thing two instances of a template both read. `10-gui.conf` goes to the
 **`@gui`** dir, never the shared one — copying it into the shared dir
-boot-starts a container whose session sockets do not exist yet.
+boot-starts a container whose session sockets do not exist yet. And
+`10-gui-guard.conf` goes to the **`@headless`** dir: it is what stops the
+headless instance waking mid-restart of the GUI one. The two GUI drop-ins
+are a pair — ship both or neither, because the guard alone would keep a
+headless-only box from ever starting on a machine that runs a desktop.
 
 ### The commands
 
@@ -219,9 +224,11 @@ sudo cp container/05-user.conf container/20-gpu.conf container/31-nvidia-raw.con
 sudo cp mybox@headless.container mybox@gui.container container/mybox-nat.network \
         /etc/containers/systemd/
 
-# GUI-only drop-in + the trigger
-sudo cp container/10-gui.conf      /etc/containers/systemd/'mybox@gui.container.d'/
-sudo cp host/mybox@gui.path        /etc/systemd/system/
+# the GUI feature: one drop-in per instance, plus the trigger
+sudo mkdir -p /etc/containers/systemd/'mybox@headless.container.d'
+sudo cp container/10-gui.conf       /etc/containers/systemd/'mybox@gui.container.d'/
+sudo cp container/10-gui-guard.conf /etc/containers/systemd/'mybox@headless.container.d'/
+sudo cp host/mybox@gui.path         /etc/systemd/system/
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now 'mybox@gui.path'
@@ -233,8 +240,9 @@ that last line prints `Job for mybox@headless.service canceled` — correct,
 not an error: the trigger you just enabled had already handed the box to
 `mybox@gui.service`.
 
-On a headless box, omit `mybox@gui.container`, `mybox@gui.container.d/` and
-`mybox@gui.path` entirely; `mybox@headless.service` boot-starts on its own.
+On a headless box, omit the whole GUI feature — `mybox@gui.container`,
+`mybox@gui.container.d/`, `mybox@headless.container.d/10-gui-guard.conf`
+and `mybox@gui.path`; `mybox@headless.service` boot-starts on its own.
 
 Do **not** `systemctl enable` the instances — quadlets cannot be enabled.
 The `[Install]` inside `mybox@headless.container` makes the generator emit

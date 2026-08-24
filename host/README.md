@@ -107,7 +107,8 @@ sources have to be literal paths, so its `Volume=` lines and its
 your compositor uses `wayland-0` (GNOME/KDE) instead of `wayland-1`.
 
 `just install` copies every file verbatim — it substitutes nothing, so a
-`cp` by hand gives byte-identical results.
+`cp` by hand gives byte-identical results. The full file-by-file table for
+a manual install is under **Installing by hand** in the repo README.
 
 ```bash
 just status                              # which instance holds the box

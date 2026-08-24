@@ -37,8 +37,10 @@ instance gets its own unit name — `mybox-test.container` →
 
 ## Usage
 
-`just install [drop-ins…]` copies the chosen set and wires the start
-trigger (see the repo justfile). By hand, from the repo root:
+`just install [drop-ins…]` copies the chosen set and enables the start
+trigger (see the repo justfile). It substitutes nothing, so copying by hand
+gives exactly the same result — the full file-by-file table is under
+**Installing by hand** in the repo README. From the repo root:
 
 ```bash
 sudo mkdir -p /etc/containers/systemd/mybox@.container.d
@@ -66,9 +68,16 @@ systemctl cat mybox@gui.service # drop-ins are merged inline
 /usr/lib/systemd/system-generators/podman-system-generator --dryrun
 ```
 
-If a drop-in didn't merge, check the path
-(`/etc/containers/systemd/mybox.container.d/` — the `.d` suffix is on
-the unit name), the `.conf` extension, and the section headers.
+If a drop-in didn't merge, check the path — `mybox@.container.d/` for the
+shared set, `mybox@gui.container.d/` for `10-gui.conf`; the `.d` suffix is
+on the unit name, and the `@` is part of it — plus the `.conf` extension
+and the section headers. `--dryrun` lists every file quadlet actually read,
+which settles it in one line:
+
+```bash
+sudo /usr/lib/systemd/system-generators/podman-system-generator --dryrun \
+  | grep Loading
+```
 
 ## Drop-in merge semantics
 

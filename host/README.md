@@ -5,7 +5,7 @@ and is not a quadlet drop-in.
 
 | File | What it does |
 |---|---|
-| `mybox-gui.path` | hands the box to `<name>@gui.service` once the desktop session is ready |
+| `mybox@gui.path` | hands the box to `<name>@gui.service` once the desktop session is ready |
 
 ## Two instances, one box
 
@@ -14,7 +14,7 @@ mybox is **one template with two mutually exclusive instances**:
 | Unit | Sockets | Started by |
 |---|---|---|
 | `mybox@headless.service` | none | boot (`WantedBy=multi-user.target`) |
-| `mybox@gui.service` | host wayland / pipewire / pulse | `mybox-gui.path` |
+| `mybox@gui.service` | host wayland / pipewire / pulse | `mybox@gui.path` |
 
 They are the *same box*: `%p` is `mybox` for both instances, so both use
 `/srv/mybox`, both are `ContainerName=mybox`, and both read every drop-in
@@ -40,8 +40,41 @@ Every arrow is a systemd directive; nothing polls and nothing is scripted.
 - `Conflicts=%p@headless.service` + `After=` — ordered handover, never both.
 - `BindsTo=run-user-1000.mount` (in `10-gui.conf`) — ends the GUI instance
   with the session.
-- `OnSuccess=%p@headless.service` — gives the box back. `OnFailure=` too,
-  so a GUI instance that cannot start still leaves the box running.
+- `OnSuccess=%p@headless.service` — gives the box back. `OnFailure=` too.
+- `ConditionPathExistsGlob=!/run/user/*/wayland-*` (in `container/10-gui-guard.conf`, installed to `<name>@headless.container.d/`) — the
+  headless instance only takes the box when there is no session to take it
+  for. This one is not optional; see below.
+
+### Why the headless instance carries a condition
+
+`OnSuccess=` fires whenever the unit enters inactive — and systemd counts
+the stop half of `systemctl restart` as exactly that. So restarting the GUI
+instance wakes the headless one, mid-restart, while a session is still up.
+
+That would be harmless if the two were independent, but they share
+`ContainerName`, and quadlet adds `--replace`: whichever starts second
+deletes the other's container. The loser exits 137, `Restart=on-failure`
+brings it back 100ms later, it replaces the winner in turn, and the pair
+destroy each other until something is killed by hand. Observed directly —
+restarts went from 1s to 47s and ended with the unit "active" and no
+container at all.
+
+The condition breaks it: during a restart the socket is still there, so the
+headless instance is skipped and the GUI instance restarts alone. At logout
+the socket is gone, so it starts for real.
+
+It lives in `10-gui-guard.conf` rather than in the headless stub because it
+belongs to the GUI feature. On a headless-only box there is no GUI instance
+to hold the box, so the same condition would stop mybox starting at all on
+any machine that runs a desktop session.
+
+**Consequence worth knowing:** if the GUI instance cannot start while a
+session exists, the headless one is skipped too and the box stays down
+rather than silently running without your sockets. `Restart=on-failure`
+and the `.path` retry; `StartLimitBurst=3` stops it thrashing.
+
+**Never start or restart both instances at once** — `just restart` only
+touches the one that currently holds the box, and that is deliberate.
 
 ### Why `BindsTo=` is written out by hand
 
@@ -62,23 +95,29 @@ re-check while the unit it triggers is still active.
 ## Install by hand
 
 ```bash
-sudo cp host/mybox-gui.path /etc/systemd/system/
-sudoedit /etc/systemd/system/mybox-gui.path
-sudo systemctl enable --now mybox-gui.path
+sudo cp host/mybox@gui.path /etc/systemd/system/
+sudo systemctl enable --now mybox@gui.path
 ```
 
-| Line | Adjust when |
-|---|---|
-| `PathExists=/run/user/1000/wayland-1` | your uid isn't 1000, or the compositor uses `wayland-0` (GNOME/KDE). Keep in sync with `container/10-gui.conf` — both its `Volume=` lines and its `BindsTo=run-user-1000.mount` |
-| `Unit=mybox@gui.service` | the instance is renamed |
+**Nothing to edit.** The unit takes its target from its own filename — a
+`.path` with no `Unit=` triggers the service of the same name, so
+`mybox@gui.path` starts `mybox@gui.service`, and renaming the file to
+`foo@gui.path` follows the box. The socket it watches is a glob,
+`/run/user/*/wayland-*`, so no uid and no compositor-specific socket number
+appear anywhere. Copy it as it is.
 
-`just install` substitutes both from `MYBOX_WAYLAND` / `MYBOX_CONTAINER`,
-and removes the whole GUI instance again when `10-gui` is dropped from the
-drop-in set.
+The one file that still names your uid is `container/10-gui.conf` — bind
+sources have to be literal paths, so its `Volume=` lines and its
+`BindsTo=run-user-1000.mount` need editing if your uid is not 1000, or if
+your compositor uses `wayland-0` (GNOME/KDE) instead of `wayland-1`.
+
+`just install` copies every file verbatim — it substitutes nothing, so a
+`cp` by hand gives byte-identical results. The full file-by-file table for
+a manual install is under **Installing by hand** in the repo README.
 
 ```bash
 just status                              # which instance holds the box
-systemctl status mybox-gui.path          # waiting == armed, running == fired
+systemctl status mybox@gui.path          # waiting == armed, running == fired
 systemctl cat mybox@gui.service          # the merged result
 ```
 
@@ -93,6 +132,6 @@ systemctl cat mybox@gui.service          # the merged result
 - **A GUI instance that keeps failing flaps.** `OnFailure=` starts
   `@headless`, the `.path` re-arms and fires again. systemd's start limit
   ends it after a few tries and the box stays headless — check
-  `systemctl status mybox-gui.path`.
+  `systemctl status mybox@gui.path`.
 - **ssh-only logins stay headless**, which is now the right answer rather
   than a failure: the box is already up.

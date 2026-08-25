@@ -153,7 +153,9 @@ AddDevice=/dev/net/tun
 # covers real-time audio, Wine/Proton, mmap-heavy loads.
 Ulimit=memlock=3221225472:3221225472
 
-# Network — pick ONE (switch via `MYBOX_NETFILE=… just install`):
+# Network — pick ONE. This line is the single source of truth: `just
+# install` reads it to decide which .network file to copy, so editing it
+# here is the whole switch.
 #   mybox-nat.network   podman bridge + NAT, works anywhere. Inbound via
 #                       PublishPort= (see 85-publish-ssh.conf)
 #   mybox-lan.network   macvlan: the container is its own host on the LAN

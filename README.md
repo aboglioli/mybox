@@ -149,7 +149,7 @@ echo 'containers:2000000:1000000' | sudo tee -a /etc/subuid /etc/subgid
 sudo useradd -r -s /usr/sbin/nologin containers 2>/dev/null || true
 sudo systemctl enable --now netavark-dhcp-proxy.socket   # for DHCP networks
 
-just install        # symlink quadlet + network + default drop-ins
+just install        # copy quadlet + network + default drop-ins
 just build          # OPTIONAL: local build over the published ghcr
                     # reference, into the ROOTFUL store; skip it and
                     # the quadlet pulls ghcr.io/aboglioli/mybox instead
@@ -165,7 +165,7 @@ the box has a GUI; see **Start model** below.
 | Recipe | What it does |
 |---|---|
 | `just build` | local build tagged over the published reference, into the rootful store |
-| `just install [drop-ins…]` | **copy** quadlet + `.network` + chosen drop-ins, wire the start trigger, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set |
+| `just install [drop-ins…]` | **copy** quadlet + `.network` + chosen drop-ins, enable the start trigger, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. Substitutes nothing — see **Installing by hand** |
 | `just start` / `stop` | start/stop the unit — stop removes the container; `/srv/<name>` survives |
 | `just sync` | re-copy the installed unit files from this repo — the "apply my edits" verb, since install copies rather than symlinks. Changes nothing about *which* drop-ins are selected |
 | `just restart` | `sync`, then recreate against the current image + drop-ins |
@@ -174,10 +174,147 @@ the box has a GUI; see **Start model** below.
 | `just login [user]` | full PAM/logind session (`login -f`) |
 
 Justfile knobs (env vars): `MYBOX_IMAGE`, `MYBOX_CONTAINER`,
-`MYBOX_USERNAME`, `MYBOX_NETFILE`, `MYBOX_DROPINS`, `MYBOX_WAYLAND`. Everything else —
+`MYBOX_USERNAME`, `MYBOX_DROPINS`. Everything else —
 network, GUI, GPU, devices, capabilities, runtime user — is a drop-in
 in `container/` (see `container/README.md`). Persistence is not: it is
 part of `mybox.container` and always on.
+
+## Installing by hand
+
+Every file is **correct exactly as it sits in this repo**. `just install`
+copies them and generates nothing, patches nothing, substitutes nothing —
+so `cp` by hand gives a byte-identical install. The recipe is a
+convenience, never a requirement.
+
+### What goes where
+
+| Repo file | Installs to |
+|---|---|
+| `mybox.container` | `/etc/containers/systemd/<name>@.container.d/00-base.conf` |
+| `container/05-user.conf` *(and any other shared drop-in)* | `/etc/containers/systemd/<name>@.container.d/` |
+| `container/10-gui.conf` | `/etc/containers/systemd/<name>@gui.container.d/` |
+| `container/10-gui-guard.conf` | `/etc/containers/systemd/<name>@headless.container.d/` |
+| `mybox@headless.container` | `/etc/containers/systemd/` |
+| `mybox@gui.container` | `/etc/containers/systemd/` |
+| `container/mybox-nat.network` *(the file named by `Network=`)* | `/etc/containers/systemd/` |
+| `host/mybox@gui.path` | `/etc/systemd/system/` |
+
+Three placements carry meaning. `mybox.container` becomes **`00-base.conf`
+inside the shared drop-in directory**, because a drop-in dir is the only
+thing two instances of a template both read. `10-gui.conf` goes to the
+**`@gui`** dir, never the shared one — copying it into the shared dir
+boot-starts a container whose session sockets do not exist yet. And
+`10-gui-guard.conf` goes to the **`@headless`** dir: it is what stops the
+headless instance waking mid-restart of the GUI one. The two GUI drop-ins
+are a pair — ship both or neither, because the guard alone would keep a
+headless-only box from ever starting on a machine that runs a desktop.
+
+### The commands
+
+```bash
+sudo mkdir -p /etc/containers/systemd/'mybox@.container.d' \
+              /etc/containers/systemd/'mybox@gui.container.d'
+
+# shared by BOTH instances
+sudo cp mybox.container            /etc/containers/systemd/'mybox@.container.d'/00-base.conf
+sudo cp container/05-user.conf container/20-gpu.conf container/31-nvidia-raw.conf \
+        container/85-publish-ssh.conf /etc/containers/systemd/'mybox@.container.d'/
+
+# the two instances + the network named by mybox.container's Network= line
+sudo cp mybox@headless.container mybox@gui.container container/mybox-nat.network \
+        /etc/containers/systemd/
+
+# the GUI feature: one drop-in per instance, plus the trigger
+sudo mkdir -p /etc/containers/systemd/'mybox@headless.container.d'
+sudo cp container/10-gui.conf       /etc/containers/systemd/'mybox@gui.container.d'/
+sudo cp container/10-gui-guard.conf /etc/containers/systemd/'mybox@headless.container.d'/
+sudo cp host/mybox@gui.path         /etc/systemd/system/
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now 'mybox@gui.path'
+sudo systemctl start mybox@headless.service
+```
+
+Quote the `@` paths. On a box where a desktop session is *already* running,
+that last line prints `Job for mybox@headless.service canceled` — correct,
+not an error: the trigger you just enabled had already handed the box to
+`mybox@gui.service`.
+
+On a headless box, omit the whole GUI feature — `mybox@gui.container`,
+`mybox@gui.container.d/`, `mybox@headless.container.d/10-gui-guard.conf`
+and `mybox@gui.path`; `mybox@headless.service` boot-starts on its own.
+
+Do **not** `systemctl enable` the instances — quadlets cannot be enabled.
+The `[Install]` inside `mybox@headless.container` makes the generator emit
+`multi-user.target.wants/mybox@headless.service` on every `daemon-reload`.
+Only `mybox@gui.path` is a real unit that needs enabling.
+
+### Copy, don't symlink
+
+Symlinks from `/etc/containers/systemd` into a tree under `/home` do not
+work — see **Start model** below for why. A symlink whose target is on a
+filesystem mounted before the generator runs (another path under `/etc`,
+say) is fine, but there is nothing to gain: `just sync` re-copies in one
+command.
+
+### The only per-host edit
+
+`container/10-gui.conf`. Bind sources must be literal paths, so its three
+`Volume=` lines and its `BindsTo=run-user-1000.mount` name uid 1000 and the
+socket `wayland-1`. Change those if your uid differs or your compositor
+uses `wayland-0` (GNOME/KDE).
+
+Nothing else names a uid. `mybox@gui.path` takes its target from its own
+filename and watches `/run/user/*/wayland-*`; `mybox@headless.container`
+tests the same glob.
+
+### Running it under another name
+
+Renaming the box is **pure file naming — no file content changes at all**.
+`%p` resolves to the new name everywhere, including inside `Conflicts=`,
+`OnSuccess=` and every `/srv/%p` path, and the `.path` unit takes its
+target from its own filename. To run `services` instead of `mybox`:
+
+| This file | …installs under the new name as |
+|---|---|
+| `mybox.container` | `services@.container.d/00-base.conf` |
+| shared drop-ins | `services@.container.d/` |
+| `container/10-gui.conf` | `services@gui.container.d/` |
+| `container/10-gui-guard.conf` | `services@headless.container.d/` |
+| `mybox@headless.container` | `services@headless.container` |
+| `mybox@gui.container` | `services@gui.container` |
+| `host/mybox@gui.path` | `/etc/systemd/system/services@gui.path` |
+
+The `.network` file is the exception: it keeps its own name, because the
+network is a separate object several boxes can share.
+
+`MYBOX_CONTAINER=services just install` does all of it. Verified by
+installing a second box as `tester` next to `mybox` and running both at
+once — every installed file was byte-identical to the `mybox` one, and the
+two came up as independent machines:
+
+```
+mybox   hostname=mybox   ip=10.89.0.2/24  state=/srv/mybox
+tester  hostname=tester  ip=10.89.0.4/24  state=/srv/tester
+```
+
+**One collision to know about if you run two at the same time:**
+`85-publish-ssh.conf` publishes host port 2222, so a second box needs that
+drop-in dropped or edited to a free port. Nothing else clashes — separate
+`/srv`, separate container names, and the shared podman network hands out
+separate IPs.
+
+### Verifying
+
+```bash
+systemctl cat mybox@gui.service   # base + shared drop-ins + 10-gui, merged
+systemctl list-units 'mybox@*'    # exactly one instance active
+sudo /usr/lib/systemd/system-generators/podman-system-generator --dryrun \
+  | grep Loading                  # every file quadlet actually read
+```
+
+That last one is the fastest way to catch a drop-in that landed in the
+wrong directory.
 
 ## Start model
 
@@ -202,7 +339,7 @@ runs it first.
 | Unit | Sockets | Started by |
 |---|---|---|
 | `<name>@headless.service` | none | boot (`WantedBy=multi-user.target`) |
-| `<name>@gui.service` | host wayland / pipewire / pulse | `host/mybox-gui.path`, when the wayland socket appears |
+| `<name>@gui.service` | host wayland / pipewire / pulse | `host/mybox@gui.path`, when a wayland socket appears |
 
 They are the same box. `%p` is `<name>` for both instances, so both use
 `/srv/<name>`, both are `ContainerName=<name>`, and both read every
@@ -312,7 +449,8 @@ kernel rule, not a mybox choice: **the host and the container cannot talk
 to each other** over macvlan. Everything else on the LAN can. Drop
 `85-publish-ssh.conf` when using it.
 
-Switch with `MYBOX_NETFILE=mybox-lan.network just install`, then
+Switch by editing the `Network=` line in `mybox.container` and re-running
+`just install` (the recipe reads the netfile out of that line), then
 `just restart`. Pin the address across recreations with
 `80-static-ip.conf` (static IPAM) or `81-static-mac.conf` (stable DHCP
 lease).

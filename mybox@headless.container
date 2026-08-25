@@ -8,9 +8,15 @@
 #
 # This is the instance that boot-starts. It needs nothing from a user
 # session, so it is up before anyone logs in and stays up on a headless
-# box forever. On a GUI box <name>-gui.path swaps to <name>@gui.service
+# box forever. On a GUI box <name>@gui.path swaps to <name>@gui.service
 # when a compositor appears, and that instance hands the box back here
 # when the session ends.
+#
+# A GUI box ALSO gets container/10-gui-guard.conf dropped into
+# <name>@headless.container.d/, which stops this instance waking up in the
+# middle of a <name>@gui restart. That guard ships with the GUI feature and
+# only with it: on a headless box there is no session to defer to, and the
+# condition would keep this instance from ever starting.
 
 [Install]
 WantedBy=multi-user.target

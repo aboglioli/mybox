@@ -7,7 +7,7 @@
 #
 # Never boot-started: it has no [Install], because its bind sources are
 # session sockets that do not exist until a compositor runs, and podman
-# hard-fails a start on a missing bind source. <name>-gui.path starts it
+# hard-fails a start on a missing bind source. <name>@gui.path starts it
 # when the wayland socket appears.
 #
 # Nothing here names the instance literally — %p is <name> for every

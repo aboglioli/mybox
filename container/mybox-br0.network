@@ -1,0 +1,28 @@
+# mybox-br0.network — the container is a peer on your LAN, via a veth into
+# the host's existing bridge. Own MAC, own LAN address, nothing to publish,
+# and unlike macvlan the host can still reach it.
+#
+# mode=unmanaged means podman attaches and nothing else: no NAT, no firewall
+# rules, no port forwarding. Needs podman >= 5.6.2.
+#
+# The bridge must exist first — on myosi, `sudo myosi bridge-create`.
+#
+# The three address lines are the only host-specific ones in this repo:
+# podman cannot discover your LAN. Check them against `ip -br addr show br0`.
+
+[Network]
+NetworkName=mybox-br0
+Driver=bridge
+InterfaceName=br0
+Options=mode=unmanaged
+
+Subnet=192.168.0.0/24
+Gateway=192.168.0.1
+
+# IPAM allocates out of your REAL LAN, so without a reserved block podman
+# hands out addresses the router already leased. The /28 leases .49-.63;
+# keep it outside the DHCP pool.
+IPRange=192.168.0.48/28
+
+# aardvark-dns would answer on the gateway, which here is your router.
+DisableDNS=true

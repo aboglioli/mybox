@@ -1,21 +1,17 @@
-# mybox-lan.network — the container is an independent host on your LAN.
-#
-# macvlan gives the container its own MAC on a physical NIC, so your
-# router sees a separate machine: it DHCPs its own LAN address, answers
-# on it directly, and needs no port publishing at all. This is the
-# closest thing to running a VM on a bridged NIC.
+# mybox-lan.network — the container is an independent host on your LAN, via
+# macvlan on a physical NIC. For hosts with no bridge; where br0 exists use
+# mybox-br0.network, which gives the same thing plus host access.
 #
 # Requirements, all of them real:
 #   * WIRED nic. Wifi drivers refuse macvlan children.
-#   * The NIC must not be enslaved to a bridge (the kernel rejects a
-#     macvlan on a bridge slave).
-#   * `sudo systemctl enable --now netavark-dhcp-proxy.socket` on the
-#     host, which is what actually speaks DHCP for IPAM=dhcp.
+#   * The NIC must not be a bridge slave — the kernel rejects that with
+#     `RTNETLINK answers: Device or resource busy`. parent=br0 (the bridge,
+#     not its slave) is accepted but pointless: same isolation, extra MAC.
+#   * netavark-dhcp-proxy.socket enabled on the host, for IPAM=dhcp.
+#     (myosi's containers profile upholds it already.)
 #
-# The one catch, and it is a kernel rule rather than a mybox choice:
-# THE HOST CANNOT TALK TO THE CONTAINER over macvlan, and vice versa.
-# Every other machine on the LAN can. If you need host <-> container
-# traffic, stay on mybox-nat.network — or reach it from another box.
+# THE HOST CANNOT TALK TO THE CONTAINER over macvlan, and vice versa. Every
+# other machine on the LAN can.
 #
 # Set parent= to the NIC holding your LAN route:
 #   ip -o route get 1.1.1.1 | awk '{print $5}'
@@ -27,8 +23,7 @@ Options=parent=enp108s0
 Options=mode=bridge
 IPAMDriver=dhcp
 
-# Static address instead of DHCP: drop IPAMDriver=dhcp, declare your LAN
-# subnet here and pin the address with the 80-static-ip.conf drop-in.
-# Pick one outside the router's DHCP pool.
+# Static instead of DHCP: drop IPAMDriver, declare the subnet here, pin the
+# address with 80-static-ip.conf. Pick one outside the router's DHCP pool.
 # Subnet=192.168.0.0/24
 # Gateway=192.168.0.1

@@ -1,1 +1,4 @@
 # The mybox OCI image lives in podman's storage, never in the tree.
+
+# Feature worktrees
+.worktrees/

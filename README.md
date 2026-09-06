@@ -428,26 +428,57 @@ that directory instead of patching the script (see its `README`).
 
 ## Network options (pick ONE .network file)
 
-Two shapes, and they answer different questions:
+Three shapes, and they answer different questions:
 
 | File | What the container is | Reaching it |
 |---|---|---|
 | `mybox-nat.network` (default) | a private address behind the host's NAT | host talks to it directly; the LAN only through `PublishPort=` |
-| `mybox-lan.network` | **its own host on your LAN**, own MAC and DHCP lease | any machine on the LAN, directly — except the host itself |
+| `mybox-br0.network` | **its own host on your LAN**, via the host's bridge | any machine on the LAN, **including the host**, directly |
+| `mybox-lan.network` | **its own host on your LAN**, via macvlan | any machine on the LAN, directly — except the host itself |
 
 **NAT** assumes nothing about your network, so it works on wifi, on a
 roaming laptop, in CI. Inbound needs published ports; `85-publish-ssh.conf`
 is in the default drop-in set and maps the container's sshd to
 `<host>:2222`. Copy that file's shape for anything else you serve.
 
-**LAN** is macvlan: the router sees a separate machine and hands it its
-own address, so nothing needs publishing — the VM-like model. It needs a
-**wired** NIC not enslaved to a bridge, `netavark-dhcp-proxy.socket`
-enabled on the host, and `parent=` set to your LAN NIC
-(`ip -o route get 1.1.1.1 | awk '{print $5}'`). Its one hard limit is a
-kernel rule, not a mybox choice: **the host and the container cannot talk
-to each other** over macvlan. Everything else on the LAN can. Drop
-`85-publish-ssh.conf` when using it.
+**br0** puts a veth into a bridge the host already owns, with
+`mode=unmanaged` so podman creates no NAT and no firewall rules — it
+attaches and stays out of the way. The container is a bridge port exactly
+like a libvirt guest's tap, so it gets its own MAC and LAN address *and*
+two-way traffic with the host. This is the option to take on a host that
+runs VMs, because that host already has the bridge:
+
+```bash
+sudo myosi bridge-create     # on myosi; any NM/networkd bridge works elsewhere
+myosi bridge-status
+```
+
+Its cost is that it is the one host-specific file in the repo:
+`Subnet=`/`Gateway=`/`IPRange=` name your real LAN, because podman cannot
+discover it. `IPRange=` is load-bearing — IPAM allocates statically out of
+your actual LAN subnet, so without a reserved block podman hands out
+addresses your router has already leased. Carve one out and exclude it
+from the DHCP pool. Needs podman ≥ 5.6.2.
+
+**LAN** is macvlan, for a host with no bridge and no wish for one. The
+router sees a separate machine and hands it its own address. It needs a
+**wired** NIC, `netavark-dhcp-proxy.socket` enabled on the host, and
+`parent=` set to your LAN NIC
+(`ip -o route get 1.1.1.1 | awk '{print $5}'`). Two kernel rules constrain
+it, neither of them a mybox choice:
+
+- **The host and the container cannot talk to each other.** Everything
+  else on the LAN can.
+- **The parent NIC cannot be a bridge slave** — `ip link add link enp3s0
+  ... type macvlan` returns `Device or resource busy` once `enp3s0` is
+  enslaved. So on a VM host, macvlan cannot ride the physical NIC at all.
+  `parent=br0` is accepted, but it stacks a second MAC on the bridge to
+  reach a LAN the bridge already reaches, and stays host-isolated. Use
+  `mybox-br0.network` there.
+
+Drop `85-publish-ssh.conf` on either LAN option — the container answers on
+2222 itself, and publishing a port on a network podman does not NAT is
+meaningless.
 
 Switch by editing the `Network=` line in `mybox.container` and re-running
 `just install` (the recipe reads the netfile out of that line), then

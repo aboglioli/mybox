@@ -24,9 +24,11 @@ mybox_username := env_var_or_default("MYBOX_USERNAME", "user")
 
 # Network: read OUT of mybox.container, not configured here. That file
 # already names the network it wants, so copying it by hand is a complete
-# install with nothing left to generate. To switch from mybox-nat.network
-# (podman bridge + NAT, works anywhere) to mybox-lan.network (macvlan — the
-# container is its own host on the LAN), edit that one Network= line.
+# install with nothing left to generate. Edit that one Network= line to
+# switch between mybox-nat.network (podman bridge + NAT, works anywhere),
+# mybox-br0.network (a port on the host's bridge — own LAN IP, host can
+# still reach it) and mybox-lan.network (macvlan — own LAN IP, host
+# cannot reach it, and impossible if the NIC is a bridge slave).
 mybox_netfile := `sed -n 's/^Network=//p' mybox.container | tail -1`
 
 # Default drop-in set for `just install`. Persistence is NOT here —

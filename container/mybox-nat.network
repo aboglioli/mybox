@@ -14,7 +14,8 @@
 #   PublishPort=127.0.0.1:5432:5432   host-only, not exposed to the LAN
 #
 # Want the container to BE a host on your LAN instead, with its own IP
-# and no publishing? Use mybox-lan.network.
+# and no publishing? Use mybox-br0.network when the host has a bridge,
+# mybox-lan.network (macvlan) when it does not.
 #
 # NO Subnet=/Gateway= on purpose. podman allocates a free range per host
 # from its default pool, which is what makes this file portable: pinning

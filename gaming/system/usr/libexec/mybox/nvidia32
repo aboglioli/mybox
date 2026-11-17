@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Install the 32-bit NVIDIA userland matching the HOST driver.
+#
+# CDI hands the box the host's 64-bit driver libraries, always the right
+# version, but no 32-bit ones: the spec has none to give. 32-bit Windows
+# games under Proton (DXVK, vkd3d) and parts of Steam need them, and they
+# must match the host kernel module exactly. So this takes them from
+# NVIDIA's own .run for that version — extracted, never executed as an
+# installer — and puts them in /usr/lib32, which lives in the /usr overlay
+# and so persists across restarts and survives image rebases.
+#
+# Runs every boot from mybox-nvidia32.service; does nothing when the
+# installed version already matches. Files from a previous version are
+# removed by the manifest it writes, so a driver upgrade leaves no strays.
+set -euo pipefail
+
+ver=$(</sys/module/nvidia/version)
+lib32=/usr/lib32
+manifest=$lib32/.mybox-nvidia32
+icd=/usr/share/vulkan/icd.d/nvidia_icd.i686.json
+
+if [ -e "$lib32/libGLX_nvidia.so.$ver" ] && [ -e "$icd" ]; then
+    exit 0
+fi
+
+# On disk, not in the tmpfs /tmp: ~400 MB download, ~1 GB extracted.
+stage=/var/cache/mybox/nvidia32
+rm -rf "$stage"
+mkdir -p "$stage"
+trap 'rm -rf -- "$stage"' EXIT
+
+run=$stage/NVIDIA-Linux-x86_64-$ver.run
+echo "nvidia32: fetching 32-bit userland for host driver $ver"
+curl -fsSL --retry 3 --connect-timeout 15 -o "$run" \
+    "https://download.nvidia.com/XFree86/Linux-x86_64/$ver/NVIDIA-Linux-x86_64-$ver.run"
+sh "$run" --extract-only --target "$stage/driver" >/dev/null
+
+if [ -f "$manifest" ]; then
+    while IFS= read -r old; do rm -f -- "$lib32/$old"; done < "$manifest"
+fi
+
+# The driver's own libraries carry its version in the file name, which
+# also leaves out the libglvnd dispatch libraries it bundles — those come
+# from lib32-libglvnd. The EGL platform libraries version on their own.
+mapfile -t libs < <(find "$stage/driver/32" -maxdepth 2 -type f \
+    \( -name "*.so.$ver" -o -name 'libnvidia-egl-*.so.*' \) -printf '%f\n' | sort -u)
+[ "${#libs[@]}" -gt 0 ] || { echo "nvidia32: no 32-bit libraries in the $ver package" >&2; exit 1; }
+
+for name in "${libs[@]}"; do
+    install -m 0755 "$(find "$stage/driver/32" -maxdepth 2 -name "$name" -print -quit)" "$lib32/$name"
+done
+printf '%s\n' "${libs[@]}" > "$manifest"
+
+# The CDI-provided ICD names /usr/lib64 by absolute path, so the 32-bit
+# loader needs its own.
+api=$(sed -n 's/.*"api_version" *: *"\([^"]*\)".*/\1/p' "$stage/driver/nvidia_icd.json")
+cat > "$icd" <<JSON
+{
+    "file_format_version" : "1.0.1",
+    "ICD": {
+        "library_path": "$lib32/libGLX_nvidia.so.0",
+        "api_version" : "$api"
+    }
+}
+JSON
+
+# Creates the soname links (libGLX_nvidia.so.0, libcuda.so.1, …).
+ldconfig
+echo "nvidia32: installed ${#libs[@]} libraries for $ver"

@@ -69,6 +69,16 @@ ENV LANG=en_US.UTF-8 \
 RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
     setcap cap_setgid+ep /usr/bin/newgidmap
 
+# pam_limits from required to optional. The box runs rootless, so its hard
+# limits are the owning account's and nothing inside can raise them; any
+# package shipping a limits.d entry above them (gamemode's `nice -10`,
+# realtime-privileges' rtprio and memlock) would otherwise fail EVERY
+# session of a user it names, systemd's user@.service included. Optional,
+# the limits that fit still apply and the rest are skipped with a log line.
+RUN sed -i -E 's/^(session[[:space:]]+)required([[:space:]]+pam_limits\.so)/\1optional\2/' \
+        /etc/pam.d/su /etc/pam.d/su-l /etc/pam.d/system-auth /etc/pam.d/system-services && \
+    ! grep -rqE '^session[[:space:]]+required[[:space:]]+pam_limits' /etc/pam.d
+
 # Wire units via 50-mybox.preset; pre-create machine-id so first boot
 # doesn't generate one (would fail under a persistent /var overlay).
 #

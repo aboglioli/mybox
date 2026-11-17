@@ -4,9 +4,12 @@ Daily-driver system container: an Arch Linux image with systemd as
 PID 1, running as a **rootless podman user quadlet** on top of an
 immutable host OS (sibling projects [myos](https://github.com/aboglioli/myos)
 / [myosi](https://github.com/aboglioli/myosi), or any Linux host with
-podman ≥ 5). `mybox.container` plus `container/*.conf` drop-ins are
-copied under `~/.config/containers/systemd`, and the owning account's
-systemd user manager owns the lifecycle. Nothing about it is host root.
+podman ≥ 5). The `mybox@.container` template plus `container/*.conf`
+drop-ins are copied under `~/.config/containers/systemd`, and the owning
+account's systemd user manager owns the lifecycle. Nothing about it is
+host root. Every box is a named instance, `mybox@<name>.service`, and the
+name is also its hostname, container name and state directory
+(`/srv/users/<uid>/<name>`). The default box is `mybox`.
 
 It is intended to feel like a small user OS, not an app container:
 real login sessions, SSH, background services, rootless and rootful
@@ -20,7 +23,7 @@ mybox/
 │   ├── Containerfile
 │   └── system/                  # mybox-nvidia32 (32-bit NVIDIA userland)
 ├── justfile                     # build images + install/drive the quadlet
-├── mybox.container              # rootless user quadlet (minimal base)
+├── mybox@.container             # rootless user quadlet template, one instance per box
 ├── container.env.example        # MYBOX_* runtime config template
 ├── container/                   # quadlet drop-ins (see container/README.md)
 ├── host/mybox-gui.service       # HOST user unit: shares the session's sockets
@@ -143,7 +146,7 @@ overrides that have stopped overriding anything after a rebase.
 missing state bind, a tree that cannot be overlaid, or a bulk payload that
 cannot be bound are all fatal: each would leave a box that looks fine and
 silently loses every write to that tree at the next restart. The unit
-fails with the reason in `journalctl --user -u <name>`.
+fails with the reason in `journalctl --user -u mybox@<name>`.
 Publishing the read-only lowers is the one exception — it only powers
 `mybox diff`, so it warns and carries on.
 
@@ -153,13 +156,32 @@ A desktop box under your own account — its apps on your compositor, the
 GPU through CDI:
 
 ```bash
-just install        # copy quadlet + default drop-ins, daemon-reload
+just install        # box `mybox`: copy template + default drop-ins, daemon-reload
 just build          # OPTIONAL: local build over the published reference,
                     # into YOUR rootless store; skip it and the quadlet
                     # pulls ghcr.io/aboglioli/mybox instead
 just start          # or log in again: 01-boot starts it with your user manager
 just status
 just login          # full PAM session as the runtime user
+```
+
+More boxes are more names, each with its own state, hostname and
+drop-ins:
+
+```bash
+just install dev                                     # default drop-ins
+just install games 01-boot 02-gaming 20-gpu 30-nvidia
+just start games && just enter games
+```
+
+Only one box can publish SSH on host port 2222. Leave `85-publish-ssh`
+out of the others, and give one its own port with a local drop-in. A
+name that is not in `container/` is never touched by `just install`:
+
+```bash
+just install dev 01-boot 05-user 10-gui 20-gpu 30-nvidia
+printf '[Container]\nPublishPort=2223:2222\n' \
+  > ~/.config/containers/systemd/mybox@dev.container.d/86-ssh-port.conf
 ```
 
 Host prereqs: rootless podman with a subuid/subgid range of at least
@@ -170,19 +192,21 @@ myenv storage convention. On myosi both exist already.
 | Recipe | What it does |
 |---|---|
 | `just build` / `build-gaming` | local build tagged over the published reference, into your rootless store |
-| `just install [drop-ins…]` | **copy** quadlet + chosen drop-ins to `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. With `10-gui` it also installs and enables `host/mybox-gui.service` |
-| `just start` / `stop` | start/stop the unit — stop removes the container; the state survives |
-| `just sync` | re-copy the installed unit files from this repo, without changing which drop-ins are selected |
-| `just restart` | `sync`, then recreate against the current image + drop-ins |
-| `just status` / `logs` | unit + container state / follow the journal |
-| `just enter [user]` | fast shell (`podman exec`, no PAM session) |
-| `just login [user]` | full PAM/logind session (`login -f`) |
+| `just install [name] [drop-ins…]` | **copy** the template + the box's chosen drop-ins to `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. With `10-gui` it also installs and enables `host/mybox-gui.service` |
+| `just start` / `stop [name]` | start/stop the box — stop removes the container; the state survives |
+| `just sync` | re-copy the template and every box's drop-ins from this repo, without changing which drop-ins each box selects |
+| `just restart [name]` | `sync`, then recreate against the current image + drop-ins |
+| `just status` | unit + container state of every box |
+| `just logs [name]` | follow the box's journal |
+| `just enter [name] [user]` | fast shell (`podman exec`, no PAM session) |
+| `just login [name] [user]` | full PAM/logind session (`login -f`) |
 
-Justfile knobs (env vars): `MYBOX_IMAGE`, `MYBOX_GAMING_IMAGE`,
-`MYBOX_CONTAINER`, `MYBOX_USERNAME`, `MYBOX_DROPINS`. Everything else —
-GUI, GPU, devices, image variant, runtime user — is a drop-in in
-`container/` (see `container/README.md`). Persistence is not: it is part
-of `mybox.container` and always on.
+`name` defaults to `mybox` and must be a valid hostname: lowercase
+letters, digits and inner dashes. Justfile knobs (env vars):
+`MYBOX_NAME`, `MYBOX_IMAGE`, `MYBOX_GAMING_IMAGE`, `MYBOX_USERNAME`,
+`MYBOX_DROPINS`. Everything else — GUI, GPU, devices, image variant,
+runtime user — is a drop-in in `container/` (see `container/README.md`).
+Persistence is not: it is part of `mybox@.container` and always on.
 
 ## Isolated box
 
@@ -199,8 +223,8 @@ sudo loginctl enable-linger games        # its user manager starts at boot
 
 sudo machinectl shell games@ /bin/bash   # a shell as games, with its user bus
 git clone https://github.com/aboglioli/mybox && cd mybox  # your tree is not readable from here
-MYBOX_CONTAINER=games just install 01-boot 02-gaming 20-gpu 30-nvidia
-just start
+just install games 01-boot 02-gaming 20-gpu 30-nvidia
+just start games
 ```
 
 `machinectl shell` rather than `sudo -u`: it opens a real session, so
@@ -227,33 +251,38 @@ byte-identical install:
 
 | Repo file | Installs to |
 |---|---|
-| `mybox.container` | `~/.config/containers/systemd/<name>.container` |
-| `container/<drop-in>.conf` | `~/.config/containers/systemd/<name>.container.d/` |
+| `mybox@.container` | `~/.config/containers/systemd/mybox@.container` |
+| *(per box)* a symlink to it | `~/.config/containers/systemd/mybox@<name>.container` |
+| `container/<drop-in>.conf` | `~/.config/containers/systemd/mybox@<name>.container.d/` |
 | `host/mybox-gui.service` *(with `10-gui`)* | `~/.config/systemd/user/`, enabled |
 
 ```bash
 Q=~/.config/containers/systemd
-mkdir -p $Q/mybox.container.d ~/.config/systemd/user
-cp mybox.container $Q/
+mkdir -p $Q/mybox@mybox.container.d ~/.config/systemd/user
+cp mybox@.container $Q/
+ln -s mybox@.container $Q/mybox@mybox.container
 cp container/01-boot.conf container/10-gui.conf container/20-gpu.conf \
-   container/30-nvidia.conf container/85-publish-ssh.conf $Q/mybox.container.d/
+   container/30-nvidia.conf container/85-publish-ssh.conf $Q/mybox@mybox.container.d/
 cp host/mybox-gui.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now mybox-gui.service
-systemctl --user start mybox
+systemctl --user start mybox@mybox
 ```
 
-**Running it under another name is pure file naming.** `%p` resolves to
-the new name everywhere, including every `/srv/users/%U/%p` path:
-`games.container` + `games.container.d/` is an independent box with its
-own state. Two boxes on one host need different `PublishPort=` host
-ports; nothing else clashes.
+**The instance name is the box.** `%i` resolves to it everywhere,
+including every `/srv/users/%U/%i` path, so `mybox@games` is an
+independent box with its own state, hostname and container name. The
+symlink is what lets a box carry its own `[Install]` (`01-boot`) and its
+own drop-ins. `systemctl --user start mybox@<name>` works without one,
+but such a box gets only the drop-ins in the shared
+`mybox@.container.d/`. Two boxes on one host need different
+`PublishPort=` host ports; nothing else clashes.
 
 Check what the generator really does:
 
 ```bash
 /usr/lib/systemd/user-generators/podman-user-generator --dryrun | grep -A3 Loading
-systemctl --user cat mybox.service
+systemctl --user cat mybox@mybox.service
 ```
 
 ## Start model

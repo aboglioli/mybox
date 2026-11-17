@@ -1,15 +1,18 @@
 # container/
 
-Quadlet drop-ins for the `mybox.container` base. Podman ≥ 5.0 merges any
-`<unit>.container.d/*.conf` next to the main quadlet into the generated
-`.service`, same semantics as systemd `.service.d/*.conf`.
+Quadlet drop-ins for the `mybox@.container` template. Podman ≥ 5.0 merges
+`*.conf` files from `mybox@<name>.container.d/` into that one box's
+`.service`, and from `mybox@.container.d/` into every box's. The
+semantics match systemd `.service.d/*.conf`. `just install` puts each
+box's selection in its own directory, so boxes never share drop-ins by
+accident.
 
-Persistence is **not** here. `mybox.container` binds
+Persistence is **not** here. `mybox@.container` binds
 `/srv/users/<uid>/<name>` at `/.mybox` and `/usr/libexec/mybox/preinit`
 builds `/etc`, `/usr`, `/var` and `/opt` on top of it before systemd
 starts, plus plain binds for `/home` and `/srv`. None of it is optional.
-A throwaway instance gets its own unit name — `mybox-test.container` →
-`/srv/users/<uid>/mybox-test` — and you delete that directory when done
+A throwaway box is just another name, `just install test` →
+`/srv/users/<uid>/test`, and you delete that directory when done
 (`podman unshare rm -rf`, since box root's files are in your subuid range).
 
 ## Drop-ins
@@ -28,27 +31,29 @@ A throwaway instance gets its own unit name — `mybox-test.container` →
 
 ## Usage
 
-`just install [drop-ins…]` copies the chosen set (see the repo justfile).
-It substitutes nothing, so copying by hand gives exactly the same result:
+`just install [name] [drop-ins…]` copies the chosen set (see the repo
+justfile). It substitutes nothing, so copying by hand gives exactly the
+same result:
 
 ```bash
-mkdir -p ~/.config/containers/systemd/mybox.container.d
-cp container/20-gpu.conf container/30-nvidia.conf \
-   ~/.config/containers/systemd/mybox.container.d/
+Q=~/.config/containers/systemd
+mkdir -p $Q/mybox@dev.container.d
+cp container/20-gpu.conf container/30-nvidia.conf $Q/mybox@dev.container.d/
 systemctl --user daemon-reload
-systemctl --user restart mybox
+systemctl --user restart mybox@dev
 ```
 
 ## Verifying a drop-in applied
 
 ```bash
-systemctl --user cat mybox.service   # drop-ins are merged inline
+systemctl --user cat mybox@dev.service   # drop-ins are merged inline
 /usr/lib/systemd/user-generators/podman-user-generator --dryrun | grep Loading
 ```
 
-If a drop-in didn't merge, check the path — `<name>.container.d/`, with
-the `.d` on the unit name — plus the `.conf` extension and the section
-headers.
+If a drop-in didn't merge, check the path. It has to be
+`mybox@<name>.container.d/`, with the `.d` on the unit name, and the box
+needs its `mybox@<name>.container` symlink. Also check the `.conf`
+extension and the section headers.
 
 ## Drop-in merge semantics
 

@@ -1,4 +1,4 @@
-# mybox.container — rootless system container quadlet (systemd PID 1).
+# mybox@.container — rootless system container quadlet (systemd PID 1).
 #
 # A USER quadlet: it runs under the host account that owns it, through
 # that account's rootless podman, and no part of it is host root. Two
@@ -14,15 +14,17 @@
 #                         linger; an escape lands in an account with
 #                         nothing worth taking.
 #
-# Every path derives from the unit name via %p and the owner via %U, so
-# copying this file to games.container gives an independent box with its
-# own state in /srv/users/<uid>/games. NOTE: %p keeps dashes literally;
-# %P would unescape them to slashes — never use %P here.
+# A template: the instance name is the box. mybox@dev.service is a box
+# with hostname and container name `dev` and its state in
+# /srv/users/<uid>/dev, independent of every other instance. Each box is
+# a symlink mybox@<name>.container → mybox@.container, so its own
+# mybox@<name>.container.d/ drop-ins (and their [Install]) apply to it
+# alone; mybox@.container.d/ applies to all. NOTE: %i keeps dashes
+# literally; %I would unescape them to slashes — never use %I here.
 #
-# Install: `just install && just start`, or copy this file plus the
-# chosen container/*.conf drop-ins into
-# ~/.config/containers/systemd/{mybox.container,mybox.container.d/}, then
-# `systemctl --user daemon-reload && systemctl --user start mybox`.
+# Install: `just install [name] [drop-ins…] && just start [name]`, or by
+# hand (README "Installing by hand"), then `systemctl --user daemon-reload &&
+# systemctl --user start mybox@<name>`.
 #
 # Lifecycle:
 #   config change   edit drop-in → daemon-reload → restart (state kept)
@@ -30,14 +32,14 @@
 #   factory reset   stop → rm -rf /srv/users/<uid>/<name>/{etc,usr}/diff → start
 
 [Unit]
-Description=%p — rootless system container (systemd PID 1)
+Description=%i — rootless system container (systemd PID 1)
 After=network-online.target
 Wants=network-online.target
 RequiresMountsFor=/srv/users/%U
 
 [Container]
-ContainerName=%p
-HostName=%p
+ContainerName=%i
+HostName=%i
 # Published from CI on release tags (YYYY.MM.DD[.XX]); :latest tracks
 # the newest release and lets AutoUpdate=registry roll forward. Pin a
 # date tag here to freeze. Local dev: `just build` tags a local build
@@ -111,10 +113,10 @@ ShmSize=4g
 # (mount_setattr: Operation not permitted). keep-id makes it unnecessary:
 # the login user's files are the owning account's files, and files box
 # root writes land in its subuid range, stable across recreations.
-EnvironmentFile=/srv/users/%U/%p/container.env
-Volume=/srv/users/%U/%p:/.mybox
-Volume=/srv/users/%U/%p/home:/home
-Volume=/srv/users/%U/%p/srv:/srv
+EnvironmentFile=/srv/users/%U/%i/container.env
+Volume=/srv/users/%U/%i:/.mybox
+Volume=/srv/users/%U/%i/home:/home
+Volume=/srv/users/%U/%i/srv:/srv
 
 # /dev/net/tun: pasta opens it in-namespace — without it every nested
 # rootless `podman run` fails. /dev/fuse: flatpak's document portal
@@ -142,21 +144,20 @@ StopTimeout=45
 Restart=on-failure
 TimeoutStartSec=600
 
-# The state dirs are created on demand, so a new <name>.container just
-# works. Nothing is SEEDED: each tree's content comes from the image as the
+# The state dirs are created on demand, so a new instance just works. Nothing is SEEDED: each tree's content comes from the image as the
 # overlay's lower, so an empty upper is a complete /etc, and a newer image's
 # changes show through instead of being frozen at whatever was copied once.
 #
 # Only the two bind SOURCES podman needs before the box exists. The trees
 # the pre-init assembles it creates itself, as box root — created out here
 # they would belong to the box's login user.
-ExecStartPre=/usr/bin/mkdir -p /srv/users/%U/%p/home /srv/users/%U/%p/srv
+ExecStartPre=/usr/bin/mkdir -p /srv/users/%U/%i/home /srv/users/%U/%i/srv
 # EnvironmentFile= above is fatal when absent, so guarantee it exists.
-ExecStartPre=/usr/bin/touch /srv/users/%U/%p/container.env
+ExecStartPre=/usr/bin/touch /srv/users/%U/%i/container.env
 
 # Must exceed StopTimeout= above (podman's own wait), or systemd kills the
 # unit first and the 45s is never actually available.
 TimeoutStopSec=60
 
-# No [Install]: WHEN the box starts is a drop-in choice — 01-boot.conf
-# (with the user manager) or 10-gui.conf (with the desktop session).
+# No [Install]: whether the box starts on its own is a per-instance
+# drop-in choice — 01-boot.conf starts it with the user manager.

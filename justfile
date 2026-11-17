@@ -1,9 +1,12 @@
 # mybox — build the images and drive the quadlet. Everything about how
-# the container is composed lives in mybox.container + container/*.conf;
+# the container is composed lives in mybox@.container + container/*.conf;
 # this file only builds, installs the unit files and gets you a shell.
 # The container is disposable (recreated on every restart/boot); state
-# persists under /srv/users/<uid>/<name>, which mybox.container binds at
+# persists under /srv/users/<uid>/<name>, which mybox@.container binds at
 # /.mybox and the pre-init turns into an overlay upper for each tree.
+#
+# Every box is an instance of the template: `name` below is its unit
+# (mybox@<name>.service), hostname, container name and state directory.
 #
 # Rootless throughout: run every recipe as the account that owns the box
 # — yourself, or the isolated account (README "Isolated box"). No sudo.
@@ -12,14 +15,14 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 mybox_dir := justfile_directory()
 
-# Must match Image= in mybox.container / container/02-gaming.conf. A
+# Must match Image= in mybox@.container / container/02-gaming.conf. A
 # local build tags over the published reference in YOUR rootless store,
 # which is the store your user quadlet reads.
 mybox_image := env_var_or_default("MYBOX_IMAGE", "ghcr.io/aboglioli/mybox:latest")
 gaming_image := env_var_or_default("MYBOX_GAMING_IMAGE", "ghcr.io/aboglioli/mybox-gaming:latest")
 
-# Unit name: <name>.container → <name>.service, state at /srv/users/<uid>/<name>.
-mybox_name := env_var_or_default("MYBOX_CONTAINER", "mybox")
+# Default box name for every recipe that takes one.
+mybox_name := env_var_or_default("MYBOX_NAME", "mybox")
 
 # Default user for `enter` / `login` (created at boot by
 # mybox-user-setup.service from MYBOX_* env).
@@ -27,13 +30,12 @@ mybox_username := env_var_or_default("MYBOX_USERNAME", "user")
 
 # Default drop-in set for `just install`: a desktop box with the GPU, up
 # with your user manager and the GUI whenever a session runs.
-# Persistence is NOT here — it is part of mybox.container itself.
+# Persistence is NOT here — it is part of mybox@.container itself.
 mybox_dropins := env_var_or_default("MYBOX_DROPINS", "01-boot 05-user 10-gui 20-gpu 30-nvidia 85-publish-ssh")
 
 config_dir := env_var_or_default("XDG_CONFIG_HOME", env_var("HOME") / ".config")
 quadlet_dir := config_dir / "containers/systemd"
 host_unit_dir := config_dir / "systemd/user"
-unit := mybox_name + ".service"
 
 default:
     @just --list --unsorted
@@ -46,27 +48,34 @@ build:
 build-gaming: build
     podman build --build-arg BASE="{{mybox_image}}" -t "{{gaming_image}}" "{{mybox_dir}}/gaming"
 
-# Install the quadlet + chosen drop-ins as a user quadlet, then daemon-reload.
+# COPIES, not symlinks into the repo: an isolated account cannot read
+# your working tree, and a copy keeps the box independent of whatever
+# branch is checked out. `just sync` pushes later repo edits.
 #
-# COPIES, not symlinks: an isolated account cannot read your working tree,
-# and a copy keeps the box independent of whatever branch is checked out.
-# `just sync` pushes later repo edits.
-#
-# Name drop-ins to override the default set:
-#   just install 01-boot 02-gaming 20-gpu 30-nvidia
+# The name doubles as hostname, so it must be one: lowercase letters,
+# digits and inner dashes. Name drop-ins to override the default set:
+#   just install                               # box `mybox`, default set
+#   just install dev                           # box `dev`, default set
+#   just install games 01-boot 02-gaming 20-gpu 30-nvidia
 #
 # With 10-gui it also installs and enables host/mybox-gui.service, the
-# host user unit that shares the desktop session's sockets.
-install *dropins:
+# host user unit that shares the desktop session's sockets with every box.
+#
+# Install the template + one box with its drop-ins, then daemon-reload.
+install name=mybox_name *dropins:
     #!/usr/bin/env bash
     set -euo pipefail
-    SRC="{{mybox_dir}}"; QD="{{quadlet_dir}}"; DIR="$QD/{{mybox_name}}.container.d"
+    NAME="{{name}}"
+    [[ "$NAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] ||
+      { echo "ERROR: '$NAME' is not a valid hostname (a-z, 0-9, inner dashes, ≤63)" >&2; exit 1; }
+    SRC="{{mybox_dir}}"; QD="{{quadlet_dir}}"; DIR="$QD/mybox@$NAME.container.d"
     LIST="{{dropins}}"; [[ -z "$LIST" ]] && LIST="{{mybox_dropins}}"
     for d in $LIST; do
       [[ -f "$SRC/container/$d.conf" ]] || { echo "ERROR: no drop-in container/$d.conf" >&2; exit 1; }
     done
     mkdir -p "$DIR"
-    install -m0644 "$SRC/mybox.container" "$QD/{{mybox_name}}.container"
+    install -m0644 "$SRC/mybox@.container" "$QD/mybox@.container"
+    ln -sfn mybox@.container "$QD/mybox@$NAME.container"
     for d in $LIST; do
       install -m0644 "$SRC/container/$d.conf" "$DIR/$d.conf"
     done
@@ -95,19 +104,20 @@ install *dropins:
       rm -f "{{host_unit_dir}}/mybox-gui.service"
     fi
     systemctl --user daemon-reload
-    echo ">>> installed $QD/{{mybox_name}}.container"
+    echo ">>> installed mybox@$NAME (state: /srv/users/$(id -u)/$NAME)"
     echo "    drop-ins: $LIST"
-    echo "    start:    just start"
+    echo "    start:    just start $NAME"
 
-# Re-copy the installed unit files from this repo (apply repo edits),
-# without changing which drop-ins are selected.
+# Keeps which drop-ins each box selects.
+#
+# Re-copy the installed template and every box's drop-ins from this repo.
 sync:
     #!/usr/bin/env bash
     set -euo pipefail
-    SRC="{{mybox_dir}}"; QD="{{quadlet_dir}}"; DIR="$QD/{{mybox_name}}.container.d"
-    [[ -e "$QD/{{mybox_name}}.container" ]] || { echo "ERROR: {{mybox_name}} is not installed — run: just install" >&2; exit 1; }
-    install -m0644 "$SRC/mybox.container" "$QD/{{mybox_name}}.container"
-    for f in "$DIR"/*.conf; do
+    SRC="{{mybox_dir}}"; QD="{{quadlet_dir}}"
+    [[ -e "$QD/mybox@.container" ]] || { echo "ERROR: mybox is not installed — run: just install" >&2; exit 1; }
+    install -m0644 "$SRC/mybox@.container" "$QD/mybox@.container"
+    for f in "$QD"/mybox@*.container.d/*.conf; do
       [[ -e "$f" ]] || continue
       b=$(basename "$f" .conf)
       [[ -f "$SRC/container/$b.conf" ]] && install -m0644 "$SRC/container/$b.conf" "$f"
@@ -117,37 +127,46 @@ sync:
     fi
     systemctl --user daemon-reload
 
-# Start the box — systemd creates the container from the image.
-start:
-    systemctl --user start "{{unit}}"
+# Start a box — systemd creates the container from the image.
+start name=mybox_name:
+    systemctl --user start "mybox@{{name}}.service"
 
-# Stop the box — systemd removes the container; the state survives.
-stop:
-    systemctl --user stop "{{unit}}"
+# Stop a box — systemd removes the container; the state survives.
+stop name=mybox_name:
+    systemctl --user stop "mybox@{{name}}.service"
 
 # Re-copies first, so edit-then-restart applies the edit.
 #
-# Recreate against the current image + drop-ins.
-restart: sync
-    systemctl --user restart "{{unit}}"
+# Recreate a box against the current image + drop-ins.
+restart name=mybox_name: sync
+    systemctl --user restart "mybox@{{name}}.service"
 
-# Unit and container state.
+# Unit and container state of every installed box.
 status:
-    -systemctl --user show "{{unit}}" -p ActiveState -p SubState -p ActiveEnterTimestamp
-    -podman ps -a --filter "name=^{{mybox_name}}$" --format 'table {{{{.Names}}\t{{{{.Status}}\t{{{{.Image}}'
+    #!/usr/bin/env bash
+    set -uo pipefail
+    printf '%-20s %-10s %s\n' BOX UNIT CONTAINER
+    for f in "{{quadlet_dir}}"/mybox@?*.container; do
+      [[ -e "$f" ]] || continue
+      name=$(basename "$f" .container); name=${name#mybox@}
+      state=$(systemctl --user is-active "mybox@$name.service")
+      ctr=$(podman ps -a --filter "name=^$name$" --format '{{{{.Status}}  {{{{.Image}}')
+      printf '%-20s %-10s %s\n' "$name" "$state" "${ctr:--}"
+    done
 
-# Follow the unit journal.
-logs:
-    journalctl --user -f -u "{{unit}}"
+# Follow a box's unit journal.
+logs name=mybox_name:
+    journalctl --user -f -u "mybox@{{name}}.service"
 
-# Fast shell as USER (podman exec, no PAM session).
-# `runuser` inside, not `podman exec -u <name>`: podman resolves a user
+# `runuser` inside, not `podman exec -u <user>`: podman resolves a user
 # NAME against the image's /etc/passwd as seen from the host, and the image
 # bakes no user — the account lives in the /etc overlay, which only exists
 # inside the container's mount namespace.
-enter user=mybox_username:
-    podman exec -it {{mybox_name}} runuser -u "{{user}}" -- /usr/bin/fish -l
+#
+# Fast shell as USER (podman exec, no PAM session).
+enter name=mybox_name user=mybox_username:
+    podman exec -it "{{name}}" runuser -u "{{user}}" -- /usr/bin/fish -l
 
 # Full PAM/logind session as USER (login -f, empty-password user).
-login user=mybox_username:
-    podman exec -it {{mybox_name}} login -f "{{user}}"
+login name=mybox_name user=mybox_username:
+    podman exec -it "{{name}}" login -f "{{user}}"

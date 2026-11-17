@@ -85,32 +85,50 @@ jobs:
           '
 
       - name: Validate the quadlet
-        # mybox.container carries the mandatory state binds, so a syntax
-        # error in it breaks every box at once. Every drop-in is loaded
-        # alongside it: none of them conflicts with another.
+        # mybox@.container carries the mandatory state binds, so a syntax
+        # error in it breaks every box at once. Two instances, laid out the
+        # way `just install` does it: `full` with every drop-in (none of
+        # them conflicts with another), `bare` with none — which also
+        # proves an instance's drop-ins stay in that instance.
         #
         # quadlet comes from the image we just built, NOT the runner: the
         # ubuntu-24.04 runner ships none, and its path is distro-specific.
         run: |
           podman run --rm --security-opt label=disable -v "$PWD:/src:ro" \
             --entrypoint bash "$IMAGE:latest" -ec '
-              mkdir -p /tmp/q/mybox.container.d
-              cp /src/mybox.container /tmp/q/
-              cp /src/container/*.conf /tmp/q/mybox.container.d/
+              mkdir -p /tmp/q/mybox@full.container.d
+              cp /src/mybox@.container /tmp/q/
+              ln -s mybox@.container /tmp/q/mybox@full.container
+              ln -s mybox@.container /tmp/q/mybox@bare.container
+              cp /src/container/*.conf /tmp/q/mybox@full.container.d/
               QUADLET_UNIT_DIRS=/tmp/q /usr/lib/podman/quadlet -user -dryrun > /tmp/q.out
+              unit() { sed -n "/^---mybox@$1.service---/,/^---/p" /tmp/q.out; }
+              unit full > /tmp/full; unit bare > /tmp/bare
+              test -s /tmp/full; test -s /tmp/bare
 
-              # Persistence is not optional: the single state bind carries
-              # every overlay upper, and the data trees are bound beside it.
-              grep -q -- "-v /srv/users/%U/%p:/.mybox " /tmp/q.out
-              for d in home srv; do
-                grep -q -- "-v /srv/users/%U/%p/$d:/$d " /tmp/q.out
+              for u in /tmp/full /tmp/bare; do
+                # The instance name is the box: name, hostname, state.
+                grep -q -- "--name %i " $u
+                grep -q -- "--hostname %i " $u
+
+                # Persistence is not optional: the single state bind carries
+                # every overlay upper, and the data trees are bound beside it.
+                grep -q -- "-v /srv/users/%U/%i:/.mybox " $u
+                for d in home srv; do
+                  grep -q -- "-v /srv/users/%U/%i/$d:/$d " $u
+                done
+
+                # Box root must not be the owning account, and PID 1 must be
+                # box root running the pre-init, or nothing is overlaid.
+                grep -q -- "--userns keep-id:uid=1000,gid=1000" $u
+                grep -q -- "--user 0:0" $u
+                grep -q "libexec/mybox/preinit" $u
               done
 
-              # Box root must not be the owning account, and PID 1 must be
-              # box root running the pre-init, or nothing is overlaid.
-              grep -q -- "--userns keep-id:uid=1000,gid=1000" /tmp/q.out
-              grep -q -- "--user 0:0" /tmp/q.out
-              grep -q "libexec/mybox/preinit" /tmp/q.out
+              grep -q "^WantedBy=default.target" /tmp/full
+              grep -q "mybox-gaming" /tmp/full
+              ! grep -q "^WantedBy=" /tmp/bare
+              ! grep -q "mybox-gaming" /tmp/bare
             '
 
       - name: Build gaming image

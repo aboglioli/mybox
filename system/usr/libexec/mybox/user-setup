@@ -16,7 +16,7 @@
 #   MYBOX_SHELL   login shell         default: /usr/bin/fish
 #
 # Set them via Environment= in the quadlet (or a *.container.d drop-in),
-# EnvironmentFile=/srv/<name>/container.env, or `-e` on podman run.
+# EnvironmentFile=/srv/users/<uid>/<name>/container.env, or `-e` on podman run.
 # Fully non-interactive: no passwd prompts (empty password — auth is
 # ssh keys or podman exec), no useradd interaction.
 #

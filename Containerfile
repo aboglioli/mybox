@@ -16,11 +16,13 @@ FROM docker.io/archlinux:base
 
 # systemd is already in archlinux:base; --needed makes it a no-op.
 # Groups: service stack / shell+scm / modern cli / nested podman /
-# flatpak / GPU dispatch / extras.
+# flatpak / GPU dispatch / X11 on wayland / extras.
 # libglvnd + vulkan-icd-loader are the dispatch layers the GPU's vendor
 # libraries plug into: CDI injects NVIDIA's (libGLX_nvidia, the Vulkan
 # ICD) from the host, mesa covers Intel/AMD, and without the loaders
-# neither is reachable from any app.
+# neither is reachable from any app. xorg-xwayland + xwayland-satellite
+# give X11 apps (Steam's client among them) a DISPLAY on the host's
+# compositor; mybox-xwayland.path starts them when it is there.
 # Nested podman is crun + pasta + netavark; slirp4netns is gone
 # (podman 6 removed it) and buildah/skopeo are vendored into podman.
 # fuse-overlayfs stays ONLY as the storage fallback for ephemeral runs:
@@ -37,7 +39,7 @@ RUN pacman-key --init && \
         rsync unzip diffutils \
         podman crun fuse-overlayfs passt \
         netavark aardvark-dns \
-        flatpak xdg-utils \
+        flatpak xdg-utils xorg-xwayland xwayland-satellite \
         libglvnd vulkan-icd-loader mesa \
         age atuin dust lazygit zellij diffnav && \
     pacman -Scc --noconfirm && \
@@ -95,7 +97,7 @@ RUN sed -i -E 's/^(session[[:space:]]+)required([[:space:]]+pam_limits\.so)/\1op
 #
 #   podman.socket / podman-restart.service  rootless API socket +
 #       resume of the user's --restart=always containers after a boot
-#   mybox-host-sockets / mybox-xwayland     GUI wiring; both self-gate
+#   mybox-host-sockets / mybox-xwayland.path  GUI wiring; both self-gate
 #       on Condition= so they are clean no-ops in a headless container
 #
 # pipewire.socket is DISABLED for the opposite reason. pipewire arrives
@@ -114,7 +116,7 @@ RUN sed -i -E 's/^(session[[:space:]]+)required([[:space:]]+pam_limits\.so)/\1op
 # depending on that condition firing.
 RUN systemctl preset-all && \
     systemctl --global enable podman.socket podman-restart.service \
-                              mybox-host-sockets.service mybox-xwayland.service && \
+                              mybox-host-sockets.service mybox-xwayland.path && \
     systemctl --global disable pipewire.socket pipewire.service && \
     systemd-sysusers && \
     systemd-machine-id-setup

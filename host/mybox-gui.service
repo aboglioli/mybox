@@ -1,0 +1,34 @@
+# Share this desktop session's sockets with the account's boxes — a HOST
+# user unit (~/.config/systemd/user/), not part of any box.
+#
+# Hard links, not binds: the box binds the DIRECTORY %t/mybox-gui once,
+# when it starts, and links appear and vanish inside it as sessions come
+# and go. So a box can boot before anyone logs in, take the GUI at login,
+# survive logout, and follow a compositor restart — never restarted for
+# any of it. A bind of the sockets themselves would need them to exist at
+# box start and would pin the inodes of a compositor that has since died.
+#
+# Only these three. The rest of the runtime dir — the session bus, the
+# gpg and ssh agents, podman.sock — would each let box code act as you
+# outside the box.
+#
+# The wayland socket is renamed to wayland-1 whatever the compositor
+# calls it (niri/sway wayland-1, GNOME/KDE wayland-0), so the box side
+# never needs editing.
+
+[Unit]
+Description=Share the desktop session's sockets with mybox
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/mkdir -p %t/mybox-gui/pulse
+ExecStart=/usr/bin/sh -c 'ln -f "%t/$${WAYLAND_DISPLAY:-wayland-1}" %t/mybox-gui/wayland-1'
+ExecStart=-/usr/bin/ln -f %t/pipewire-0 %t/mybox-gui/pipewire-0
+ExecStart=-/usr/bin/ln -f %t/pulse/native %t/mybox-gui/pulse/native
+ExecStop=/usr/bin/rm -f %t/mybox-gui/wayland-1 %t/mybox-gui/pipewire-0 %t/mybox-gui/pulse/native
+
+[Install]
+WantedBy=graphical-session.target

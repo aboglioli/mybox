@@ -1,0 +1,16 @@
+# Start Xwayland inside the box whenever the host's wayland socket is
+# there. It may appear long after the box user's session started (the
+# box boots before anyone logs in), vanish at logout and come back at the
+# next login; a path unit follows all three.
+#
+# Watches /mnt/host itself, where the host's link appears, not the
+# symlink in XDG_RUNTIME_DIR, which exists all the time.
+[Unit]
+Description=Start Xwayland when the host wayland socket appears
+ConditionPathIsDirectory=/mnt/host
+
+[Path]
+PathExists=/mnt/host/wayland-1
+
+[Install]
+WantedBy=default.target

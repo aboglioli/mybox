@@ -68,6 +68,8 @@ jobs:
             # Enablement is baked at build time, so its absence is a
             # build bug, not a runtime surprise.
             test -L /usr/share/factory/etc/systemd/user/default.target.wants/mybox-host-sockets.service
+            test -L /usr/share/factory/etc/systemd/user/default.target.wants/mybox-xwayland.path
+            test -x /usr/bin/xwayland-satellite
             test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-user-setup.service
 
             # sysusers ran at build time, so declared accounts exist in
@@ -85,8 +87,7 @@ jobs:
       - name: Validate the quadlet
         # mybox.container carries the mandatory state binds, so a syntax
         # error in it breaks every box at once. Every drop-in is loaded
-        # alongside it except 01-boot, which only adds an [Install] line
-        # that conflicts with nothing.
+        # alongside it: none of them conflicts with another.
         #
         # quadlet comes from the image we just built, NOT the runner: the
         # ubuntu-24.04 runner ships none, and its path is distro-specific.
@@ -96,7 +97,6 @@ jobs:
               mkdir -p /tmp/q/mybox.container.d
               cp /src/mybox.container /tmp/q/
               cp /src/container/*.conf /tmp/q/mybox.container.d/
-              rm /tmp/q/mybox.container.d/01-boot.conf
               QUADLET_UNIT_DIRS=/tmp/q /usr/lib/podman/quadlet -user -dryrun > /tmp/q.out
 
               # Persistence is not optional: the single state bind carries

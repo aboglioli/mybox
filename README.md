@@ -23,6 +23,7 @@ mybox/
 ├── mybox.container              # rootless user quadlet (minimal base)
 ├── container.env.example        # MYBOX_* runtime config template
 ├── container/                   # quadlet drop-ins (see container/README.md)
+├── host/mybox-gui.service       # HOST user unit: shares the session's sockets
 └── system/                      # image config tree (Containerfile COPY)
     ├── etc/                     # → /etc (snapshotted to /usr/share/factory/etc)
     └── usr/                     # → /usr (immutable at runtime)
@@ -156,7 +157,7 @@ just install        # copy quadlet + default drop-ins, daemon-reload
 just build          # OPTIONAL: local build over the published reference,
                     # into YOUR rootless store; skip it and the quadlet
                     # pulls ghcr.io/aboglioli/mybox instead
-just start          # or log in again: 10-gui starts it with the session
+just start          # or log in again: 01-boot starts it with your user manager
 just status
 just login          # full PAM session as the runtime user
 ```
@@ -169,7 +170,7 @@ myenv storage convention. On myosi both exist already.
 | Recipe | What it does |
 |---|---|
 | `just build` / `build-gaming` | local build tagged over the published reference, into your rootless store |
-| `just install [drop-ins…]` | **copy** quadlet + chosen drop-ins to `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set |
+| `just install [drop-ins…]` | **copy** quadlet + chosen drop-ins to `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. With `10-gui` it also installs and enables `host/mybox-gui.service` |
 | `just start` / `stop` | start/stop the unit — stop removes the container; the state survives |
 | `just sync` | re-copy the installed unit files from this repo, without changing which drop-ins are selected |
 | `just restart` | `sync`, then recreate against the current image + drop-ins |
@@ -213,7 +214,8 @@ the GPU, the 32-bit NVIDIA service and box root at the account's first
 subuid.
 
 The account's sockets are not your desktop's, so this shape is headless:
-no `10-gui.conf`. Make sure your own state is not world-readable, or
+no `10-gui.conf` (the hard links would be yours, and other accounts
+cannot traverse your runtime dir). Make sure your own state is not world-readable, or
 the isolation stops at file permissions: `/srv/users/<uid>` and
 anything holding keys should be `0700`.
 
@@ -227,14 +229,17 @@ byte-identical install:
 |---|---|
 | `mybox.container` | `~/.config/containers/systemd/<name>.container` |
 | `container/<drop-in>.conf` | `~/.config/containers/systemd/<name>.container.d/` |
+| `host/mybox-gui.service` *(with `10-gui`)* | `~/.config/systemd/user/`, enabled |
 
 ```bash
 Q=~/.config/containers/systemd
-mkdir -p $Q/mybox.container.d
+mkdir -p $Q/mybox.container.d ~/.config/systemd/user
 cp mybox.container $Q/
-cp container/10-gui.conf container/20-gpu.conf container/30-nvidia.conf \
-   container/85-publish-ssh.conf $Q/mybox.container.d/
+cp container/01-boot.conf container/10-gui.conf container/20-gpu.conf \
+   container/30-nvidia.conf container/85-publish-ssh.conf $Q/mybox.container.d/
+cp host/mybox-gui.service ~/.config/systemd/user/
 systemctl --user daemon-reload
+systemctl --user enable --now mybox-gui.service
 systemctl --user start mybox
 ```
 
@@ -253,26 +258,40 @@ systemctl --user cat mybox.service
 
 ## Start model
 
-One unit, and the drop-in set decides when it starts:
+**One box that is always the same box.** `01-boot.conf` starts it with
+its owner's user manager — at login, or at boot with linger and for the
+isolated account. Without it, only `just start` does.
 
-| Drop-in | Starts with | For |
-|---|---|---|
-| `10-gui.conf` | `graphical-session.target` | a desktop box under your own account |
-| `01-boot.conf` | `default.target` of the owning user manager | headless: the isolated account, or yours with linger |
-| neither | `just start` only | |
+The GUI is not a start mode but something that comes and goes **inside
+a running box**:
 
-The GUI box is **started by the session and ends with it**: the target is
-reached once the compositor is up and its sockets exist, and `PartOf=`
-stops the box when the session goes. A compositor restart stops and
-re-reaches the target, so the box comes back on the new sockets instead
-of holding dead ones. The two-instance template, the host `.path` trigger
-and the guard condition of the rootful layout are all gone — they existed
-to bridge a system unit to a user session, and a user unit is already in
-the session.
+```
+box up        /mnt/host bound, empty: headless, sockets inside dangle
+login         host mybox-gui.service hard links wayland/pipewire/pulse
+              into %t/mybox-gui -> they appear at /mnt/host
+              -> mybox-xwayland.path starts Xwayland, apps can draw
+logout        mybox-gui.service removes the links; the box keeps running
+compositor    the target stops and starts again, the links are renewed,
+restart       new clients reach the new compositor
+```
 
-The two do not mix: `default.target` is reached before the compositor
-creates its sockets, and podman hard-fails a start on a missing bind
-source.
+The box is never restarted for any of it — verified by starting
+the box with no session sockets, bringing the links up and down twice,
+and opening native Wayland, Xwayland, gamescope-nested and
+NVIDIA-offloaded windows in niri each time, all on one container start.
+
+That is the rootful layout's behaviour (boot headless, take the GUI at
+login, hand it back at logout) without its machinery: the two-instance
+template, the `Conflicts=`/`OnSuccess=` handover, the host `.path`
+trigger and the guard condition are gone. They existed because a bind of
+a socket needs the socket at container start and pins its inode
+forever; a bound **directory** whose entries are hard links has neither
+problem.
+
+Hard links rather than binds or symlinks: the host side runs as you,
+without privileges to bind-mount, and a symlink would point at a path
+that does not exist inside the box. A hard link is the socket inode
+itself, so `connect()` on it reaches the compositor.
 
 ## Runtime user + SSH keys
 
@@ -355,8 +374,21 @@ purpose: CDI does not read it, and it is what wakes a legacy
 `nvidia-container-runtime-hook` if a host still registers one.
 
 Verified rootless on a desktop and a hybrid laptop with NVIDIA GPUs:
-`nvidia-smi`, Vulkan, EGL and GLX on NVIDIA, and on the laptop EGL
-through the host's niri.
+`nvidia-smi`, Vulkan, EGL and GLX on NVIDIA; on the laptop, windows in
+niri from native Wayland (`vkcube`), X11 through the box's Xwayland
+(`glxgears`), a nested gamescope, and GLX offloaded to the discrete GPU.
+
+**X11 apps** get Xwayland inside the box: the base ships
+`xorg-xwayland` + `xwayland-satellite`, and `mybox-xwayland.path` starts
+it on `DISPLAY=:0` whenever the host wayland socket is there. The host's
+own `:0` is unreachable — niri keeps it as an abstract socket, which is
+network-namespace scoped.
+
+**Compositors inside the box** run as clients of the host's (gamescope,
+sway or niri nested in a window) or headless (`gamescope --backend
+headless`, for streaming). One that takes over the screen from a TTY is
+gone with the rootful layout: rootless cannot become DRM master or open
+virtual terminals.
 
 **Hybrid laptops** render on the GPU the compositor uses, like any
 desktop app; offload to NVIDIA per app with
@@ -374,7 +406,7 @@ libraries. The gaming variant covers it, below.
 `Image=`, and an existing box keeps its state.
 
 ```bash
-just install 02-gaming 10-gui 20-gpu 30-nvidia 85-publish-ssh
+just install 01-boot 02-gaming 10-gui 20-gpu 30-nvidia 85-publish-ssh
 ```
 
 **32-bit NVIDIA.** `mybox-nvidia32.service` reads the host driver version
@@ -386,8 +418,10 @@ and removes the previous version's files through a manifest. The first
 boot after a driver change downloads ~400 MB; an offline boot just leaves
 32-bit games without the GPU until the next one.
 
-Verified with Steam's own `steam-runtime-system-info` inside
-pressure-vessel, the container Steam runs games in: Vulkan and GLX on
+Steam's client opens on the host desktop through the box's Xwayland
+(verified: the sign-in window in niri). Verified with Steam's own
+`steam-runtime-system-info` inside pressure-vessel, the container Steam
+runs games in: Vulkan and GLX on
 NVIDIA for both i386 and x86_64. 32-bit EGL on X11 falls back to
 llvmpipe — games use GLX or Vulkan, so it rarely matters.
 

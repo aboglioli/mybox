@@ -25,11 +25,14 @@ mybox_name := env_var_or_default("MYBOX_CONTAINER", "mybox")
 # mybox-user-setup.service from MYBOX_* env).
 mybox_username := env_var_or_default("MYBOX_USERNAME", "user")
 
-# Default drop-in set for `just install`: a desktop box with the GPU.
+# Default drop-in set for `just install`: a desktop box with the GPU, up
+# with your user manager and the GUI whenever a session runs.
 # Persistence is NOT here — it is part of mybox.container itself.
-mybox_dropins := env_var_or_default("MYBOX_DROPINS", "05-user 10-gui 20-gpu 30-nvidia 85-publish-ssh")
+mybox_dropins := env_var_or_default("MYBOX_DROPINS", "01-boot 05-user 10-gui 20-gpu 30-nvidia 85-publish-ssh")
 
-quadlet_dir := env_var_or_default("XDG_CONFIG_HOME", env_var("HOME") / ".config") / "containers/systemd"
+config_dir := env_var_or_default("XDG_CONFIG_HOME", env_var("HOME") / ".config")
+quadlet_dir := config_dir / "containers/systemd"
+host_unit_dir := config_dir / "systemd/user"
 unit := mybox_name + ".service"
 
 default:
@@ -51,6 +54,9 @@ build-gaming: build
 #
 # Name drop-ins to override the default set:
 #   just install 01-boot 02-gaming 20-gpu 30-nvidia
+#
+# With 10-gui it also installs and enables host/mybox-gui.service, the
+# host user unit that shares the desktop session's sockets.
 install *dropins:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -73,6 +79,21 @@ install *dropins:
       [[ -f "$SRC/container/$b.conf" ]] || continue
       grep -qw -- "$b" <<<"$LIST" || { echo "    removing stale drop-in: $b"; rm -f "$f"; }
     done
+    # 10-gui needs the host side that shares the session's sockets. One
+    # unit serves every box of this account, so it stays while any
+    # installed box still has 10-gui.
+    if grep -qw -- 10-gui <<<"$LIST"; then
+      mkdir -p "{{host_unit_dir}}"
+      install -m0644 "$SRC/host/mybox-gui.service" "{{host_unit_dir}}/mybox-gui.service"
+      systemctl --user daemon-reload
+      systemctl --user enable mybox-gui.service
+      if systemctl --user is-active -q graphical-session.target; then
+        systemctl --user restart mybox-gui.service
+      fi
+    elif ! compgen -G "$QD/*.container.d/10-gui.conf" >/dev/null; then
+      systemctl --user disable --now mybox-gui.service 2>/dev/null || true
+      rm -f "{{host_unit_dir}}/mybox-gui.service"
+    fi
     systemctl --user daemon-reload
     echo ">>> installed $QD/{{mybox_name}}.container"
     echo "    drop-ins: $LIST"
@@ -91,6 +112,9 @@ sync:
       b=$(basename "$f" .conf)
       [[ -f "$SRC/container/$b.conf" ]] && install -m0644 "$SRC/container/$b.conf" "$f"
     done
+    if [[ -e "{{host_unit_dir}}/mybox-gui.service" ]]; then
+      install -m0644 "$SRC/host/mybox-gui.service" "{{host_unit_dir}}/mybox-gui.service"
+    fi
     systemctl --user daemon-reload
 
 # Start the box — systemd creates the container from the image.

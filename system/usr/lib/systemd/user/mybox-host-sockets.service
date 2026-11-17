@@ -1,16 +1,12 @@
-# Symlink host GUI/audio sockets (/mnt/host/*, bound by the container
-# runtime) into XDG_RUNTIME_DIR so wayland/pulse/pipewire and flatpak
-# --socket=* discover them at the standard paths. See the script for the
-# rationale (logind wipes /run/user at login, so the runtime binds land
-# at /mnt/host and we relink them here, per user session).
+# Symlink the host GUI/audio sockets (/mnt/host/*, see 10-gui.conf) into
+# XDG_RUNTIME_DIR so wayland/pulse/pipewire and flatpak --socket=* find
+# them at the standard paths. See the script for the rationale.
 #
 # Enabled for every session by `systemctl --global enable` at image
-# build time. The Condition below makes it a clean no-op when no host
-# sockets are bound (compositor-inside / headless).
+# build time. A clean no-op on a box without 10-gui.conf.
 [Unit]
 Description=Link host GUI/audio sockets into XDG_RUNTIME_DIR
-ConditionPathExistsGlob=/mnt/host/*
-Before=mybox-xwayland.service
+ConditionPathIsDirectory=/mnt/host
 
 [Service]
 Type=oneshot

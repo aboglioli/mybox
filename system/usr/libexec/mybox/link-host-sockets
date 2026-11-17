@@ -26,10 +26,24 @@ mkdir -p "$run"
 # in-container D-Bus and, with it, nested rootless podman's systemd
 # cgroup manager. The gui drop-in never binds the host bus; this is the
 # defence in depth so no stray /mnt/host/bus can ever clobber it.
+#
+# A DIRECTORY is recreated for real and only its entries are linked:
+# libpulse opens $XDG_RUNTIME_DIR/pulse with O_NOFOLLOW to check it is
+# private, and refuses a symlinked one with "Too many levels of symbolic
+# links" — no audio at all.
 for src in /mnt/host/*; do
     [ -e "$src" ] || continue
     name="$(basename -- "$src")"
     [ "$name" = bus ] && continue
+    if [ -d "$src" ]; then
+        [ -L "$run/$name" ] && rm -f "$run/$name"
+        [ -d "$run/$name" ] || mkdir -m 0700 "$run/$name"
+        for entry in "$src"/*; do
+            [ -e "$entry" ] || continue
+            ln -sfn "$entry" "$run/$name/$(basename -- "$entry")"
+        done
+        continue
+    fi
     ln -sfn "$src" "$run/$name"
 done
 

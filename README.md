@@ -1,27 +1,28 @@
 # mybox
 
 Daily-driver system container: an Arch Linux image with systemd as
-PID 1, running as a **podman quadlet** on top of an immutable host OS
-(sibling projects [myos](https://github.com/aboglioli/myos) /
-[myosi](https://github.com/aboglioli/myosi), or any Linux host with
+PID 1, running as a **rootless podman user quadlet** on top of an
+immutable host OS (sibling projects [myos](https://github.com/aboglioli/myos)
+/ [myosi](https://github.com/aboglioli/myosi), or any Linux host with
 podman ≥ 5). `mybox.container` plus `container/*.conf` drop-ins are
-copied under `/etc/containers/systemd`, with systemd owning the
-lifecycle. The `justfile` builds the image, installs the unit files and
-gives you a shell; it does not drive podman by hand.
+copied under `~/.config/containers/systemd`, and the owning account's
+systemd user manager owns the lifecycle. Nothing about it is host root.
 
 It is intended to feel like a small user OS, not an app container:
-real login sessions, SSH, background services, game/http servers,
-rootless podman inside, Flatpak, and optional GUI, GPU, KVM/libvirt,
-WireGuard and Tailscale.
+real login sessions, SSH, background services, rootless and rootful
+podman inside, Flatpak, the GPU through CDI with nothing installed
+inside, KVM, and a gaming variant with Steam and Proton.
 
 ```
 mybox/
-├── Containerfile                # OCI image build (Arch Linux + systemd PID 1)
-├── justfile                     # build image + install/drive the quadlet
-├── mybox.container              # rootful quadlet (minimal base)
+├── Containerfile                # base image (Arch Linux + systemd PID 1)
+├── gaming/                      # gaming variant, FROM the base
+│   ├── Containerfile
+│   └── system/                  # mybox-nvidia32 (32-bit NVIDIA userland)
+├── justfile                     # build images + install/drive the quadlet
+├── mybox.container              # rootless user quadlet (minimal base)
 ├── container.env.example        # MYBOX_* runtime config template
-├── container/                   # quadlet drop-ins + .network files (see container/README.md)
-├── host/                        # HOST-side systemd units (start trigger; see host/README.md)
+├── container/                   # quadlet drop-ins (see container/README.md)
 └── system/                      # image config tree (Containerfile COPY)
     ├── etc/                     # → /etc (snapshotted to /usr/share/factory/etc)
     └── usr/                     # → /usr (immutable at runtime)
@@ -29,7 +30,7 @@ mybox/
         ├── libexec/mybox/       # preinit (root assembly), user-setup, …
         ├── local/bin/mybox      # in-container CLI dispatcher
         └── share/mybox/
-            ├── just/            # in-container recipes (install-nvidia, …)
+            ├── just/            # in-container recipes
             └── user-groups.d/   # extra groups for the runtime user
 ```
 
@@ -44,16 +45,16 @@ boot; nothing of value lives inside it.
 
 | Host | In container | Mechanism |
 |---|---|---|
-| `/srv/<name>` | `/.mybox` | the one state bind — holds every overlay upper. Never itself overlaid |
-| `/srv/<name>/etc/diff` | `/etc` | overlay upper; **lower is the image's `/etc`** |
-| `/srv/<name>/usr/diff` | `/usr` | overlay upper; lower is the image's `/usr` — pacman installs, NVIDIA userland |
-| `/srv/<name>/var` | `/var` | **plain bind** — no image layer worth keeping |
-| `/srv/<name>/opt` | `/opt` | **plain bind** — the image ships nothing here |
-| `/srv/<name>/var/lib/containers` | `/var/lib/containers` | ordinary subdirectory of the `/var` bind |
-| `/srv/<name>/var/lib/flatpak` | `/var/lib/flatpak` | ordinary subdirectory, same |
-| `/srv/<name>/home` | `/home` | raw bind — user data, no image content to layer |
-| `/srv/<name>/srv` | `/srv` | raw bind, empty by contract — nested-quadlet service data |
-| `/srv/<name>/container.env` | env for PID 1 | optional `MYBOX_*` runtime config |
+| `/srv/users/<uid>/<name>` | `/.mybox` | the one state bind — holds every overlay upper. Never itself overlaid |
+| `/srv/users/<uid>/<name>/etc/diff` | `/etc` | overlay upper; **lower is the image's `/etc`** |
+| `/srv/users/<uid>/<name>/usr/diff` | `/usr` | overlay upper; lower is the image's `/usr` — pacman installs, NVIDIA userland |
+| `/srv/users/<uid>/<name>/var` | `/var` | **plain bind** — no image layer worth keeping |
+| `/srv/users/<uid>/<name>/opt` | `/opt` | **plain bind** — the image ships nothing here |
+| `/srv/users/<uid>/<name>/var/lib/containers` | `/var/lib/containers` | ordinary subdirectory of the `/var` bind |
+| `/srv/users/<uid>/<name>/var/lib/flatpak` | `/var/lib/flatpak` | ordinary subdirectory, same |
+| `/srv/users/<uid>/<name>/home` | `/home` | raw bind — user data, no image content to layer |
+| `/srv/users/<uid>/<name>/srv` | `/srv` | raw bind, empty by contract — nested-quadlet service data |
+| `/srv/users/<uid>/<name>/container.env` | env for PID 1 | optional `MYBOX_*` runtime config |
 
 **Only `/etc` and `/usr` are overlays.** Those are the trees whose image
 content is worth layering under. `/var` and `/opt` are plain binds: the
@@ -86,11 +87,15 @@ and `exec`s systemd, which keeps it PID 1. It is the initrd pattern
 without the initrd; podman still treats the container as a systemd one
 because `--systemd=always` is explicit.
 
-**Bulk payloads are raw binds, not overlay content.** Nested podman
-storage and flatpak apps are gigabytes, are not image-derived, and must
-not vanish on a factory reset of `/var` — so the pre-init binds them
-back over the overlay. podman cannot do it for us: anything it mounts
-under `/var` is shadowed the moment `/var` is overlaid.
+**Box root owns the trees, whoever created them.** The host account
+creates `home/` and `srv/` before the box exists (podman needs bind
+sources), and keep-id makes that account the box's login user. The
+pre-init therefore takes every tree directory and overlay upper for root
+before mounting it — otherwise `/var` would be the user's to write, an
+overlay root takes its upper's owner, and systemd-tmpfiles refuses every
+path below a user-owned `/var` as an unsafe transition, silently skipping
+`/var/lib/pacman`. Only the directories themselves; their contents were
+written from inside.
 
 Inside, `/root` symlinks to `/var/roothome` and `/var/lib/pacman` to
 `/usr/lib/pacman`, so both ride their tree's overlay. `/run`, `/tmp` and
@@ -126,7 +131,7 @@ file), so `-type f` reports every deletion as "unchanged" — the one wrong
 answer. `list` reads both.
 
 Factory reset is per tree and non-destructive to data:
-`rm -rf /srv/<name>/etc/diff` while stopped resets configuration and
+`rm -rf /srv/users/<uid>/<name>/etc/diff` while stopped resets configuration and
 leaves `/home`, the flatpak apps and the container images alone. Only
 `/etc` and `/usr` have a `diff` to reset; `/var` and `/opt` are plain
 binds, so there you delete the path itself. For a
@@ -137,266 +142,151 @@ overrides that have stopped overriding anything after a rebase.
 missing state bind, a tree that cannot be overlaid, or a bulk payload that
 cannot be bound are all fatal: each would leave a box that looks fine and
 silently loses every write to that tree at the next restart. The unit
-fails with the reason on the console and in `journalctl -u <name>`.
+fails with the reason in `journalctl --user -u <name>`.
 Publishing the read-only lowers is the one exception — it only powers
 `mybox diff`, so it warns and carries on.
 
 ## Quick start
 
-```bash
-# One-time host prereqs:
-echo 'containers:2000000:1000000' | sudo tee -a /etc/subuid /etc/subgid
-sudo useradd -r -s /usr/sbin/nologin containers 2>/dev/null || true
-sudo systemctl enable --now netavark-dhcp-proxy.socket   # for DHCP networks
+A desktop box under your own account — its apps on your compositor, the
+GPU through CDI:
 
-just install        # copy quadlet + network + default drop-ins
-just build          # OPTIONAL: local build over the published ghcr
-                    # reference, into the ROOTFUL store; skip it and
-                    # the quadlet pulls ghcr.io/aboglioli/mybox instead
-just start          # systemctl start mybox@headless (or @gui)
+```bash
+just install        # copy quadlet + default drop-ins, daemon-reload
+just build          # OPTIONAL: local build over the published reference,
+                    # into YOUR rootless store; skip it and the quadlet
+                    # pulls ghcr.io/aboglioli/mybox instead
+just start          # or log in again: 10-gui starts it with the session
 just status
 just login          # full PAM session as the runtime user
 ```
 
-Quadlets cannot be `systemctl enable`d — the generator wires boot from
-the unit's `[Install]` section. What that means here depends on whether
-the box has a GUI; see **Start model** below.
+Host prereqs: rootless podman with a subuid/subgid range of at least
+200000 for your account (nested podman inside needs 165536 of them), and
+a `/srv/users/<uid>` directory you own — the rootless half of the
+myenv storage convention. On myosi both exist already.
 
 | Recipe | What it does |
 |---|---|
-| `just build` | local build tagged over the published reference, into the rootful store |
-| `just install [drop-ins…]` | **copy** quadlet + `.network` + chosen drop-ins, enable the start trigger, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. Substitutes nothing — see **Installing by hand** |
-| `just start` / `stop` | start/stop the unit — stop removes the container; `/srv/<name>` survives |
-| `just sync` | re-copy the installed unit files from this repo — the "apply my edits" verb, since install copies rather than symlinks. Changes nothing about *which* drop-ins are selected |
+| `just build` / `build-gaming` | local build tagged over the published reference, into your rootless store |
+| `just install [drop-ins…]` | **copy** quadlet + chosen drop-ins to `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set |
+| `just start` / `stop` | start/stop the unit — stop removes the container; the state survives |
+| `just sync` | re-copy the installed unit files from this repo, without changing which drop-ins are selected |
 | `just restart` | `sync`, then recreate against the current image + drop-ins |
-| `just status` / `logs` | unit + container state + LAN IP / follow journal |
+| `just status` / `logs` | unit + container state / follow the journal |
 | `just enter [user]` | fast shell (`podman exec`, no PAM session) |
 | `just login [user]` | full PAM/logind session (`login -f`) |
 
-Justfile knobs (env vars): `MYBOX_IMAGE`, `MYBOX_CONTAINER`,
-`MYBOX_USERNAME`, `MYBOX_DROPINS`. Everything else —
-network, GUI, GPU, devices, capabilities, runtime user — is a drop-in
-in `container/` (see `container/README.md`). Persistence is not: it is
-part of `mybox.container` and always on.
+Justfile knobs (env vars): `MYBOX_IMAGE`, `MYBOX_GAMING_IMAGE`,
+`MYBOX_CONTAINER`, `MYBOX_USERNAME`, `MYBOX_DROPINS`. Everything else —
+GUI, GPU, devices, image variant, runtime user — is a drop-in in
+`container/` (see `container/README.md`). Persistence is not: it is part
+of `mybox.container` and always on.
+
+## Isolated box
+
+Run the box under a **dedicated system account** that owns nothing but
+the box. That is the shape for untrusted code — games from anywhere, a
+future streaming server: whatever escapes the box lands as an account
+with no home worth reading, no keys and no other services.
+
+```bash
+sudo useradd -r -m -d /var/lib/games -s /usr/sbin/nologin games
+echo 'games:3000000:1000000' | sudo tee -a /etc/subuid /etc/subgid  # a free range
+sudo install -d -o games -g games -m 0700 /srv/users/$(id -u games)
+sudo loginctl enable-linger games        # its user manager starts at boot
+
+sudo machinectl shell games@ /bin/bash   # a shell as games, with its user bus
+git clone https://github.com/aboglioli/mybox && cd mybox  # your tree is not readable from here
+MYBOX_CONTAINER=games just install 01-boot 02-gaming 20-gpu 30-nvidia
+just start
+```
+
+`machinectl shell` rather than `sudo -u`: it opens a real session, so
+`systemctl --user` and rootless podman find the account's runtime dir
+and bus.
+
+`01-boot.conf` starts it with that account's user manager, which linger
+brings up at boot — no login involved. Verified end to end: restarting
+the account's `user@<uid>.service` brought the box up on its own, with
+the GPU, the 32-bit NVIDIA service and box root at the account's first
+subuid.
+
+The account's sockets are not your desktop's, so this shape is headless:
+no `10-gui.conf`. Make sure your own state is not world-readable, or
+the isolation stops at file permissions: `/srv/users/<uid>` and
+anything holding keys should be `0700`.
 
 ## Installing by hand
 
 Every file is **correct exactly as it sits in this repo**. `just install`
-copies them and generates nothing, patches nothing, substitutes nothing —
-so `cp` by hand gives a byte-identical install. The recipe is a
-convenience, never a requirement.
-
-### What goes where
+copies them and generates nothing, so `cp` by hand gives a
+byte-identical install:
 
 | Repo file | Installs to |
 |---|---|
-| `mybox.container` | `/etc/containers/systemd/<name>@.container.d/00-base.conf` |
-| `container/05-user.conf` *(and any other shared drop-in)* | `/etc/containers/systemd/<name>@.container.d/` |
-| `container/10-gui.conf` | `/etc/containers/systemd/<name>@gui.container.d/` |
-| `container/10-gui-guard.conf` | `/etc/containers/systemd/<name>@headless.container.d/` |
-| `mybox@headless.container` | `/etc/containers/systemd/` |
-| `mybox@gui.container` | `/etc/containers/systemd/` |
-| `container/mybox-nat.network` *(the file named by `Network=`)* | `/etc/containers/systemd/` |
-| `host/mybox@gui.path` | `/etc/systemd/system/` |
-
-Three placements carry meaning. `mybox.container` becomes **`00-base.conf`
-inside the shared drop-in directory**, because a drop-in dir is the only
-thing two instances of a template both read. `10-gui.conf` goes to the
-**`@gui`** dir, never the shared one — copying it into the shared dir
-boot-starts a container whose session sockets do not exist yet. And
-`10-gui-guard.conf` goes to the **`@headless`** dir: it is what stops the
-headless instance waking mid-restart of the GUI one. The two GUI drop-ins
-are a pair — ship both or neither, because the guard alone would keep a
-headless-only box from ever starting on a machine that runs a desktop.
-
-### The commands
+| `mybox.container` | `~/.config/containers/systemd/<name>.container` |
+| `container/<drop-in>.conf` | `~/.config/containers/systemd/<name>.container.d/` |
 
 ```bash
-sudo mkdir -p /etc/containers/systemd/'mybox@.container.d' \
-              /etc/containers/systemd/'mybox@gui.container.d'
-
-# shared by BOTH instances
-sudo cp mybox.container            /etc/containers/systemd/'mybox@.container.d'/00-base.conf
-sudo cp container/05-user.conf container/20-gpu.conf container/31-nvidia-raw.conf \
-        container/85-publish-ssh.conf /etc/containers/systemd/'mybox@.container.d'/
-
-# the two instances + the network named by mybox.container's Network= line
-sudo cp mybox@headless.container mybox@gui.container container/mybox-nat.network \
-        /etc/containers/systemd/
-
-# the GUI feature: one drop-in per instance, plus the trigger
-sudo mkdir -p /etc/containers/systemd/'mybox@headless.container.d'
-sudo cp container/10-gui.conf       /etc/containers/systemd/'mybox@gui.container.d'/
-sudo cp container/10-gui-guard.conf /etc/containers/systemd/'mybox@headless.container.d'/
-sudo cp host/mybox@gui.path         /etc/systemd/system/
-
-sudo systemctl daemon-reload
-sudo systemctl enable --now 'mybox@gui.path'
-sudo systemctl start mybox@headless.service
+Q=~/.config/containers/systemd
+mkdir -p $Q/mybox.container.d
+cp mybox.container $Q/
+cp container/10-gui.conf container/20-gpu.conf container/30-nvidia.conf \
+   container/85-publish-ssh.conf $Q/mybox.container.d/
+systemctl --user daemon-reload
+systemctl --user start mybox
 ```
 
-Quote the `@` paths. On a box where a desktop session is *already* running,
-that last line prints `Job for mybox@headless.service canceled` — correct,
-not an error: the trigger you just enabled had already handed the box to
-`mybox@gui.service`.
+**Running it under another name is pure file naming.** `%p` resolves to
+the new name everywhere, including every `/srv/users/%U/%p` path:
+`games.container` + `games.container.d/` is an independent box with its
+own state. Two boxes on one host need different `PublishPort=` host
+ports; nothing else clashes.
 
-On a headless box, omit the whole GUI feature — `mybox@gui.container`,
-`mybox@gui.container.d/`, `mybox@headless.container.d/10-gui-guard.conf`
-and `mybox@gui.path`; `mybox@headless.service` boot-starts on its own.
-
-Do **not** `systemctl enable` the instances — quadlets cannot be enabled.
-The `[Install]` inside `mybox@headless.container` makes the generator emit
-`multi-user.target.wants/mybox@headless.service` on every `daemon-reload`.
-Only `mybox@gui.path` is a real unit that needs enabling.
-
-### Copy, don't symlink
-
-Symlinks from `/etc/containers/systemd` into a tree under `/home` do not
-work — see **Start model** below for why. A symlink whose target is on a
-filesystem mounted before the generator runs (another path under `/etc`,
-say) is fine, but there is nothing to gain: `just sync` re-copies in one
-command.
-
-### The only per-host edit
-
-`container/10-gui.conf`. Bind sources must be literal paths, so its three
-`Volume=` lines and its `BindsTo=run-user-1000.mount` name uid 1000 and the
-socket `wayland-1`. Change those if your uid differs or your compositor
-uses `wayland-0` (GNOME/KDE).
-
-Nothing else names a uid. `mybox@gui.path` takes its target from its own
-filename and watches `/run/user/*/wayland-*`; `mybox@headless.container`
-tests the same glob.
-
-### Running it under another name
-
-Renaming the box is **pure file naming — no file content changes at all**.
-`%p` resolves to the new name everywhere, including inside `Conflicts=`,
-`OnSuccess=` and every `/srv/%p` path, and the `.path` unit takes its
-target from its own filename. To run `services` instead of `mybox`:
-
-| This file | …installs under the new name as |
-|---|---|
-| `mybox.container` | `services@.container.d/00-base.conf` |
-| shared drop-ins | `services@.container.d/` |
-| `container/10-gui.conf` | `services@gui.container.d/` |
-| `container/10-gui-guard.conf` | `services@headless.container.d/` |
-| `mybox@headless.container` | `services@headless.container` |
-| `mybox@gui.container` | `services@gui.container` |
-| `host/mybox@gui.path` | `/etc/systemd/system/services@gui.path` |
-
-The `.network` file is the exception: it keeps its own name, because the
-network is a separate object several boxes can share.
-
-`MYBOX_CONTAINER=services just install` does all of it. Verified by
-installing a second box as `tester` next to `mybox` and running both at
-once — every installed file was byte-identical to the `mybox` one, and the
-two came up as independent machines:
-
-```
-mybox   hostname=mybox   ip=10.89.0.2/24  state=/srv/mybox
-tester  hostname=tester  ip=10.89.0.4/24  state=/srv/tester
-```
-
-**One collision to know about if you run two at the same time:**
-`85-publish-ssh.conf` publishes host port 2222, so a second box needs that
-drop-in dropped or edited to a free port. Nothing else clashes — separate
-`/srv`, separate container names, and the shared podman network hands out
-separate IPs.
-
-### Verifying
+Check what the generator really does:
 
 ```bash
-systemctl cat mybox@gui.service   # base + shared drop-ins + 10-gui, merged
-systemctl list-units 'mybox@*'    # exactly one instance active
-sudo /usr/lib/systemd/system-generators/podman-system-generator --dryrun \
-  | grep Loading                  # every file quadlet actually read
+/usr/lib/systemd/user-generators/podman-user-generator --dryrun | grep -A3 Loading
+systemctl --user cat mybox.service
 ```
-
-That last one is the fastest way to catch a drop-in that landed in the
-wrong directory.
 
 ## Start model
 
-**Unit files are COPIES, never symlinks.** The quadlet generator runs at
-the very start of the boot transaction — before `local-fs.target`, before
-any `.mount` unit — so a symlink from `/etc/containers/systemd` into a tree
-under `/home` is unreadable exactly when it matters. The generator then
-emits **nothing**, and `systemctl status mybox@headless.service` says
-`Unit … could not be found` — no unit at all, rather than a failed
-one. The familiar workaround (`daemon-reload` after login, then start by
-hand, every boot) is the symptom.
+One unit, and the drop-in set decides when it starts:
 
-On an encrypted home this is unfixable by any unlock method: homed has no
-TPM2 support (`homectl` has no `--tpm2-device`),
-`systemd-homed-activate.service` has no `ExecStart`, and linger governs
-*user*-scope quadlets while this is a rootful *system* quadlet. Copying is
-the fix. `just sync` pushes later repo edits to `/etc`, and `just restart`
-runs it first.
-
-**One template, two mutually exclusive instances:**
-
-| Unit | Sockets | Started by |
+| Drop-in | Starts with | For |
 |---|---|---|
-| `<name>@headless.service` | none | boot (`WantedBy=multi-user.target`) |
-| `<name>@gui.service` | host wayland / pipewire / pulse | `host/mybox@gui.path`, when a wayland socket appears |
+| `10-gui.conf` | `graphical-session.target` | a desktop box under your own account |
+| `01-boot.conf` | `default.target` of the owning user manager | headless: the isolated account, or yours with linger |
+| neither | `just start` only | |
 
-They are the same box. `%p` is `<name>` for both instances, so both use
-`/srv/<name>`, both are `ContainerName=<name>`, and both read every
-drop-in in `<name>@.container.d/` — which is where `mybox.container`
-itself installs, as `00-base.conf`. A quadlet drop-in directory is the
-only thing two instances of a template both read, so that is where the
-shared definition has to live; the two `.container` files are stubs
-carrying just the wiring that differs. Only one may run at a time — two
-systemd PID 1s over the same overlay uppers would corrupt them.
+The GUI box is **started by the session and ends with it**: the target is
+reached once the compositor is up and its sockets exist, and `PartOf=`
+stops the box when the session goes. A compositor restart stops and
+re-reaches the target, so the box comes back on the new sockets instead
+of holding dead ones. The two-instance template, the host `.path` trigger
+and the guard condition of the rootful layout are all gone — they existed
+to bridge a system unit to a user session, and a user unit is already in
+the session.
 
-`10-gui.conf` is the single unshared drop-in. Its bind sources are session
-sockets that don't exist until a compositor runs, and podman hard-fails a
-missing bind source (`statfs …: no such file or directory`), so it goes
-into `<name>@gui.container.d/` and never boot-starts.
-
-The handover is all systemd directives — nothing polls, nothing is
-scripted:
-
-```
-boot     @headless up
-login    .path fires -> @gui starts -> Conflicts= stops @headless
-logout   /run/user/<uid> unmounts -> BindsTo= stops @gui
-         -> OnSuccess= starts @headless -> .path re-arms
-```
-
-One catch worth knowing: quadlet's own `RequiresMountsFor=` does *not*
-give you that logout edge — systemd grants a mount discovered only in
-`/proc/self/mountinfo` an `After=` but no `Requires=`, so `10-gui.conf`
-writes `BindsTo=run-user-1000.mount` out by hand. Without it, re-login
-inherits dead sockets.
-
-Restarting the compositor *within* one session is the one case this does
-not catch (the runtime dir stays mounted, and a `.path` unit does not
-re-check while its unit is active): run `just restart`. Drop `10-gui` and
-`just install` removes the GUI instance entirely; an ssh-only login then
-needs nothing, because the box is already up. See `host/README.md`.
-
-Check what the generator will really do:
-
-```bash
-sudo /usr/lib/systemd/system-generators/podman-system-generator /tmp/g /tmp/g /tmp/g
-find /tmp/g     # multi-user.target.wants/mybox@headless.service == boot start
-```
+The two do not mix: `default.target` is reached before the compositor
+creates its sockets, and podman hard-fails a start on a missing bind
+source.
 
 ## Runtime user + SSH keys
 
 The image bakes NO user. `mybox-user-setup.service` creates one at boot
 from env — with no env at all you still get a default user
-(`user` / 1000 / 1000 / fish), which is what makes replicating the host
-account a one-liner (`MYBOX_UID` = your host uid):
+(`user` / 1000 / 1000 / fish). Keep uid 1000: keep-id maps exactly that
+box uid to the owning host account, whatever its own uid is.
 
 ```
 MYBOX_USER / MYBOX_UID / MYBOX_GID / MYBOX_SHELL
 MYBOX_AUTHORIZED_KEYS      comma-separated ssh keys
 ```
 
-Set them in `/srv/<name>/container.env`, which the quadlet loads and
+Set them in `/srv/users/<uid>/<name>/container.env`, which the quadlet loads and
 creates empty on first start — per instance, no wiring (see
 `container.env.example`). A `*.container.d` drop-in's `Environment=`
 overrides it, which is why the shipped `05-user.conf` keeps its lines
@@ -406,11 +296,11 @@ that alongside `~/.ssh/authorized_keys`. Local alternative — bind-mount
 a host file instead:
 
 ```
-Volume=/srv/mybox/authorized_keys:/etc/ssh/authorized_keys.d/<user>:ro
+Volume=/srv/users/%U/mybox/authorized_keys:/etc/ssh/authorized_keys.d/<user>:ro
 ```
 
-sshd listens on **port 2222** (port 22 belongs to the host sshd when
-`Network=host`; kept consistent across all network modes). Auth is
+sshd listens on **port 2222**, published on the host by
+`85-publish-ssh.conf`. Auth is
 pubkey-only; the runtime user has an empty password (console/`podman
 exec` entry only) and NOPASSWD sudo.
 
@@ -426,109 +316,127 @@ without a manual `usermod` — its group exists at the next boot and gets
 bound then. Variant images add their own groups by shipping a file in
 that directory instead of patching the script (see its `README`).
 
-## Network options (pick ONE .network file)
+## Networking
 
-Three shapes, and they answer different questions:
+`Network=pasta`: the box shares the host's addresses and reaches whatever
+the owning account can. Inbound is through `PublishPort=` —
+`85-publish-ssh.conf` maps the box's sshd to `<host>:2222`; copy its
+shape for anything else you serve.
 
-| File | What the container is | Reaching it |
-|---|---|---|
-| `mybox-nat.network` (default) | a private address behind the host's NAT | host talks to it directly; the LAN only through `PublishPort=` |
-| `mybox-br0.network` | **its own host on your LAN**, via the host's bridge | any machine on the LAN, **including the host**, directly |
-| `mybox-lan.network` | **its own host on your LAN**, via macvlan | any machine on the LAN, directly — except the host itself |
+Rootless cannot give the box its own LAN address: no macvlan, no port on
+the host's bridge, no static IP or MAC. The `.network` files and the
+static-address drop-ins of the rootful layout are gone with it. DNS is
+baked into the image (resolved.conf.d + nsswitch `resolve`).
 
-**NAT** assumes nothing about your network, so it works on wifi, on a
-roaming laptop, in CI. Inbound needs published ports; `85-publish-ssh.conf`
-is in the default drop-in set and maps the container's sshd to
-`<host>:2222`. Copy that file's shape for anything else you serve.
+## GPU
 
-**br0** puts a veth into a bridge the host already owns, with
-`mode=unmanaged` so podman creates no NAT and no firewall rules — it
-attaches and stays out of the way. The container is a bridge port exactly
-like a libvirt guest's tap, so it gets its own MAC and LAN address *and*
-two-way traffic with the host. This is the option to take on a host that
-runs VMs, because that host already has the bridge:
+`20-gpu.conf` binds `/dev/dri`, `/dev/snd` and `/dev/input`;
+`30-nvidia.conf` adds the NVIDIA GPU through **CDI**. Rootless podman
+has no device cgroup, so the host's own permissions decide what opens:
+
+- render nodes, `/dev/nvidia*`, `/dev/kvm`, `/dev/fuse` and
+  `/dev/net/tun` are `0666`;
+- sound and game controllers open through the ACLs logind's uaccess
+  grants the seat's user — which keep-id makes the box user;
+- **keyboards and mice do not**: verified on a laptop, neither box root
+  nor the box user can open the keyboard's event node.
+
+`/dev/input` and `/dev/snd` are bound as directories, so a controller
+plugged in later appears inside. hidraw nodes cannot be bound that way;
+Steam Input falls back to evdev.
+
+**NVIDIA through CDI only.** Podman injects the device nodes and the host
+driver's own userland — `libGLX_nvidia`, `libcuda`, the Vulkan and EGL
+ICDs, `nvidia-smi` — so it always matches the host kernel module and
+nothing is installed inside. Needs a CDI spec on the host
+(`nvidia-ctk cdi list` → `nvidia.com/gpu=all`; the myosi nvidia sysexts
+generate it at boot). The drop-in sets no `NVIDIA_*` environment on
+purpose: CDI does not read it, and it is what wakes a legacy
+`nvidia-container-runtime-hook` if a host still registers one.
+
+Verified rootless on a desktop and a hybrid laptop with NVIDIA GPUs:
+`nvidia-smi`, Vulkan, EGL and GLX on NVIDIA, and on the laptop EGL
+through the host's niri.
+
+**Hybrid laptops** render on the GPU the compositor uses, like any
+desktop app; offload to NVIDIA per app with
+`__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia` (Vulkan
+apps and DXVK pick the discrete GPU themselves).
+
+**32-bit** is the one thing CDI cannot do — specs carry no 32-bit
+libraries. The gaming variant covers it, below.
+
+## Gaming variant
+
+`ghcr.io/aboglioli/mybox-gaming` is the base plus Steam, umu-launcher
+(Proton for any Windows exe, outside Steam), gamescope, mangohud and the
+32-bit GPU stack. Same box, different image: `02-gaming.conf` switches
+`Image=`, and an existing box keeps its state.
 
 ```bash
-sudo myosi bridge-create     # on myosi; any NM/networkd bridge works elsewhere
-myosi bridge-status
+just install 02-gaming 10-gui 20-gpu 30-nvidia 85-publish-ssh
 ```
 
-Its cost is that it is the one host-specific file in the repo:
-`Subnet=`/`Gateway=`/`IPRange=` name your real LAN, because podman cannot
-discover it. `IPRange=` is load-bearing — IPAM allocates statically out of
-your actual LAN subnet, so without a reserved block podman hands out
-addresses your router has already leased. Carve one out and exclude it
-from the DHCP pool. Needs podman ≥ 5.6.2.
+**32-bit NVIDIA.** `mybox-nvidia32.service` reads the host driver version
+from `/sys/module/nvidia/version`, takes NVIDIA's own `.run` for exactly
+that version, extracts only its 32-bit libraries into `/usr/lib32` (the
+`/usr` overlay, so they persist) and writes the 32-bit Vulkan ICD. It is
+a no-op once the version matches, re-runs when the host driver changes,
+and removes the previous version's files through a manifest. The first
+boot after a driver change downloads ~400 MB; an offline boot just leaves
+32-bit games without the GPU until the next one.
 
-**LAN** is macvlan, for a host with no bridge and no wish for one. The
-router sees a separate machine and hands it its own address. It needs a
-**wired** NIC, `netavark-dhcp-proxy.socket` enabled on the host, and
-`parent=` set to your LAN NIC
-(`ip -o route get 1.1.1.1 | awk '{print $5}'`). Two kernel rules constrain
-it, neither of them a mybox choice:
+Verified with Steam's own `steam-runtime-system-info` inside
+pressure-vessel, the container Steam runs games in: Vulkan and GLX on
+NVIDIA for both i386 and x86_64. 32-bit EGL on X11 falls back to
+llvmpipe — games use GLX or Vulkan, so it rarely matters.
 
-- **The host and the container cannot talk to each other.** Everything
-  else on the LAN can.
-- **The parent NIC cannot be a bridge slave** — `ip link add link enp3s0
-  ... type macvlan` returns `Device or resource busy` once `enp3s0` is
-  enslaved. So on a VM host, macvlan cannot ride the physical NIC at all.
-  `parent=br0` is accepted, but it stacks a second MAC on the bridge to
-  reach a LAN the bridge already reaches, and stays host-isolated. Use
-  `mybox-br0.network` there.
+**Not included: gamemode.** Rootless, the box's hard nice limit is 0 and
+only host root can raise it, so gamemode cannot renice anything, and the
+CPU governor it would set is host sysfs. Worse, its limits.d entry made
+pam_limits fail every session of its group's members, user manager
+included. The base now makes pam_limits optional for exactly this class
+of package (see Security posture).
 
-Drop `85-publish-ssh.conf` on either LAN option — the container answers on
-2222 itself, and publishing a port on a network podman does not NAT is
-meaningless.
-
-Switch by editing the `Network=` line in `mybox.container` and re-running
-`just install` (the recipe reads the netfile out of that line), then
-`just restart`. Pin the address across recreations with
-`80-static-ip.conf` (static IPAM) or `81-static-mac.conf` (stable DHCP
-lease).
-
-Neither file pins a subnet. podman allocates a free range per host,
-which is what keeps them reusable: a hardcoded range fails outright on a
-host where something else already holds it (`subnet … is already used on
-the host or by another config`) and the container never starts. The
-allocation is stable anyway — the network object outlives container
-recreations. Pin `Subnet=`/`Gateway=` only when something outside podman
-needs the range up front, and accept that the file stops being
-host-agnostic.
-
-**Editing a `.network` file is not enough on its own.** Quadlet creates
-the podman network object only when it is missing and never reconciles an
-existing one against the file, so an edit — or a switch that reuses the
-name — silently keeps the old object, and the container lands on a subnet
-the file no longer mentions. `just net-reset` deletes it so the next start
-rebuilds it from the file.
+**A streaming server** (Sunshine or similar, streaming a compositor that
+runs inside the box) fits the isolated account. Not shipped yet: it
+needs `/dev/uinput`, which is root-only on the host and would have to be
+granted to that account by a udev rule — and a uinput device is
+host-global input.
 
 ## Security posture
 
-Rootful only means the podman CLI runs as root — the workload is NOT
-host root:
-
-- **`--userns=auto:size=200000`** is the load-bearing control:
-  container UID 0 maps to host UID ~2000000. Every capability the
-  container holds is namespaced — nothing over host-owned files,
-  devices or processes.
+Rootless end to end: the podman that creates the box is the owning
+account's, and **no box uid maps to host root**.
 
 | Knob | State | Why |
 |---|---|---|
-| `userns=auto:size=200000` | on | container root ≠ host root; size fits the inner 100000:65536 subuid pool for nested podman |
-| default seccomp | kept | biggest attack-surface cut; validated with systemd + nested podman + bwrap + flatpak |
-| `/proc` masking | kept | `--systemd=always` mounts what PID 1 needs |
-| `SYS_ADMIN SYS_NICE MKNOD` | kept | systemd/mounts/nesting, scheduling, nested device nodes |
-| `NET_ADMIN`/`NET_RAW` | in base | nested ROOTFUL podman (`sudo podman run` inside) needs them: netavark builds a bridge, veth and nftables rules in the container's own netns and fails with `Netlink error: Operation not permitted` otherwise. Namespaced by `userns=auto`, so they reach the container's netns and nothing of the host's — **except** under `Network=host`, where the netns is the host's and you should drop them |
-| `/dev/fuse` + `/dev/net/tun` | kept | tun: pasta (nested rootless podman networking). fuse: flatpak document portal + fuse-overlayfs fallback. Devices only, no capabilities |
-| `label=disable` | the one open item | `container_t` breaks boot on an Enforcing host; no dedicated policy module yet |
+| rootless user quadlet | on | an escape lands in the owning account, never root |
+| `UserNS=keep-id:uid=1000,gid=1000` | on | box uid 1000 = the owning account; box root = its first subuid, which owns nothing on the host |
+| dedicated account (Isolated box) | optional | makes the owning account worthless too |
+| default seccomp, `/proc` masking | kept | validated with systemd + nested podman + bwrap + flatpak + Steam's pressure-vessel |
+| `SYS_ADMIN NET_ADMIN NET_RAW SYS_NICE` | kept | namespaced: the pre-init's overlays, systemd, nested podman (rootful inside needs `NET_ADMIN`), VPNs, ping, realtime audio. None reaches the host |
+| no `MKNOD` | dropped | an unprivileged user namespace cannot create device nodes anyway |
+| devices | host permissions | no device cgroup rootless; only what the owning account can open — not keyboards |
+| `pam_limits` optional | on | the box cannot raise its own hard limits; a limits.d entry above them would otherwise lock every login out |
+| `label=disable` | the one open item | `container_t` is denied the GPU's device nodes (NVML: "Insufficient Permissions") and breaks systemd's boot |
 
-Fine for a daily-driver box running your own workloads. Run untrusted
-code only nested behind mybox's own rootless podman (a second userns).
-Do not expose the container's sshd to the public internet.
+Under your own account the box is a strong boundary for what runs as box
+root, and an ordinary one for what runs as the box user: that is you.
+Run untrusted code under the isolated account, and nested behind the
+box's own rootless podman (a second user namespace) on top of that.
 
-**Store note:** rootful and rootless podman keep SEPARATE image
-stores. The system quadlet reads the rootful store — `just build` uses
-`sudo podman build`; a rootless build is invisible to the unit.
+Not covered by any of it: the kernel and the GPU driver are shared, as
+with every container.
+
+**Store note:** each account has its own rootless image store; the user
+quadlet reads its owner's. `just build` builds into it.
+
+**Moving from the rootful layout.** The old state under `/srv/<name>`
+is owned by root-namespace ids, and its `/etc`, `/usr` and `/var` are
+cheaper to rebuild than to re-own: copy `home/` (and `srv/`) to
+`/srv/users/<uid>/<name>/` owned by you, let the overlays start empty,
+re-pull nested images and flatpaks.
 
 ## Rebasing: what a new image changes on an existing box
 
@@ -547,7 +455,7 @@ That is the property the old seeded-bind model could not offer: a
 populated `/etc` was never re-seeded, so newly enabled units, new
 `environment.d` drop-ins and edited defaults silently never arrived and
 had to be reconciled by hand after every rebase. Now only what you
-personally changed is pinned, and `find /srv/<name>/etc/diff -type f`
+personally changed is pinned, and `mybox list`
 tells you exactly what that is.
 
 `ConditionNeedsUpdate=/etc` works again as a side effect — the `/usr`
@@ -616,32 +524,12 @@ justfile. Slot convention: 00-49 shipped, 50-99 local additions.
 
 | Recipe | What it does |
 |---|---|
-| `install-nvidia` | installs userland matching the host driver via the official `.run` (raw-device path; the CDI drop-in doesn't need it). Re-run after host driver upgrades |
 | `list [tree]` | what this box changed, by path — `changed` from the upper's files, `deleted` from its whiteouts |
 | `diff [tree]` | the same question with content, compared against the overlay's real lower |
 | `reset <path>` | stop overriding one path so it follows the image again (restart to apply). `/etc` and `/usr` only |
 | `prune [tree] [apply]` | find overrides that no longer override anything — upper files identical to the image, whiteouts hiding files it no longer ships |
 
 Overlay trees are `etc` (default) and `usr`.
-
-## NVIDIA
-
-Two drop-ins, pick ONE:
-
-- `30-nvidia.conf` — CDI (`nvidia.com/gpu=all`): podman injects devices
-  AND userland. Needs `nvidia-ctk cdi generate` on the host.
-- `31-nvidia-raw.conf` — raw `/dev/nvidia*` + `sudo mybox
-  install-nvidia` inside. For host/driver combos where the CDI hook
-  fails under userns. `/dev/nvidia-modeset` is mandatory for Vulkan —
-  without it the driver segfaults inside `vkCreateDevice` while
-  `nvidia-smi` still looks fine.
-
-## Variants
-
-Layer a sibling `Containerfile` with
-`FROM ghcr.io/aboglioli/mybox:<tag>` (or a local build) for variants:
-dev toolchains, gaming, CUDA compute. All inherit the CLI + recipes +
-GUI environment.
 
 ## License
 

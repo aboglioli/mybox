@@ -1,0 +1,12 @@
+# Persistent=true: a box that was stopped through the scheduled time
+# cleans up at its next boot instead of skipping the week.
+[Unit]
+Description=Weekly Homebrew cleanup
+
+[Timer]
+OnCalendar=weekly
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

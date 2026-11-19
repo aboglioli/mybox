@@ -9,10 +9,12 @@
 # /home/linuxbrew/.linuxbrew is the one prefix Homebrew's bottles are
 # built for; anywhere else most formulae compile from source.
 #
-# Homebrew's documented manual install, not its install.sh: a shallow
-# clone of the brew repository plus the bin/brew link. bin/brew is
-# created LAST, after `brew update` has fetched the latest release and its
-# portable Ruby, so it doubles as the success marker the unit's
+# Homebrew's documented git-clone install rather than install.sh, which
+# would be an unpinned script fetched at boot and wants sudo to create
+# the prefix. Same layout and the same repository as install.sh leaves:
+# not shallow, because the first `brew update` fetches every release tag
+# anyway and a shallow clone ends up the same size. bin/brew is created
+# LAST, so it doubles as the success marker the unit's
 # ConditionPathExists= checks — a failed attempt leaves no link and is
 # retried, from scratch, on the next boot.
 set -euo pipefail
@@ -27,6 +29,7 @@ uid="${MYBOX_UID:-1000}"
 # when the name changed after first boot.
 entry=$(getent passwd "$uid") || { echo "homebrew-setup: no account with uid $uid" >&2; exit 1; }
 name=${entry%%:*}
+home=$(echo "$entry" | cut -d: -f6)
 gid=$(id -g "$name")
 
 prefix=/home/linuxbrew/.linuxbrew
@@ -36,12 +39,15 @@ install -d -m 0755 -o "$uid" -g "$gid" /home/linuxbrew "$prefix"
 rm -rf "$prefix/Homebrew"
 
 as_user() {
-    runuser -u "$name" -- env HOME="$(getent passwd "$name" | cut -d: -f6)" \
-        HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 "$@"
+    runuser -u "$name" -- env HOME="$home" HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 "$@"
 }
+brew="$prefix/Homebrew/bin/brew"
 
-as_user git clone --quiet --depth=1 https://github.com/Homebrew/brew "$prefix/Homebrew"
-as_user "$prefix/Homebrew/bin/brew" update --force --quiet
+as_user git clone --quiet https://github.com/Homebrew/brew "$prefix/Homebrew"
+as_user "$brew" update --force --quiet
+# The portable Ruby tarball update just unpacked; the formula index in
+# the cache stays, every install needs it.
+as_user "$brew" cleanup --prune=all -s >/dev/null || true
 as_user mkdir -p "$prefix/bin"
 as_user ln -sfn ../Homebrew/bin/brew "$prefix/bin/brew"
 echo "homebrew-setup: $(as_user "$prefix/bin/brew" --version | head -1) installed for $name"

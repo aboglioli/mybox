@@ -72,6 +72,7 @@ jobs:
             test -x /usr/bin/xwayland-satellite
             test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-user-setup.service
             test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-homebrew.service
+            test -L /usr/share/factory/etc/systemd/system/timers.target.wants/mybox-homebrew-cleanup.timer
             test -x /usr/libexec/mybox/homebrew-setup
 
             # sysusers ran at build time, so declared accounts exist in
@@ -82,6 +83,7 @@ jobs:
             # error, which is the whole point of running it here.
             systemd-analyze verify \
               /usr/lib/systemd/system/mybox-*.service \
+              /usr/lib/systemd/system/mybox-*.timer \
               /usr/lib/systemd/system/flatpak-setup.service \
               /usr/lib/systemd/system/proc-unmask.service
           '

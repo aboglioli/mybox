@@ -43,9 +43,11 @@ default:
 build:
     podman build -t "{{mybox_image}}" "{{mybox_dir}}"
 
-# COPIES, not symlinks into the repo: an isolated account cannot read
-# your working tree, and a copy keeps the box independent of whatever
-# branch is checked out. `just sync` pushes later repo edits.
+# SYMLINKS into this checkout, so the installed units are always the
+# repo's: edit, then `just restart`. Install from the checkout you keep —
+# a worktree you later delete leaves dangling links, and switching its
+# branch changes the box at the next restart. An isolated account clones
+# its own copy (README "Isolated box").
 #
 # The name doubles as hostname, so it must be one: lowercase letters,
 # digits and inner dashes. Name drop-ins to override the default set:
@@ -69,16 +71,16 @@ install name=mybox_name *dropins:
       [[ -f "$SRC/container/$d.conf" ]] || { echo "ERROR: no drop-in container/$d.conf" >&2; exit 1; }
     done
     mkdir -p "$DIR"
-    install -m0644 "$SRC/mybox@.container" "$QD/mybox@.container"
+    ln -sfn "$SRC/mybox@.container" "$QD/mybox@.container"
     ln -sfn mybox@.container "$QD/mybox@$NAME.container"
     for d in $LIST; do
-      install -m0644 "$SRC/container/$d.conf" "$DIR/$d.conf"
+      ln -sfn "$SRC/container/$d.conf" "$DIR/$d.conf"
     done
     # Declarative: drop what is no longer in LIST. "Ours" is decided by
     # name — hand-written local drop-ins have no counterpart in container/
     # and are left alone.
     for f in "$DIR"/*.conf; do
-      [[ -e "$f" ]] || continue
+      [[ -e "$f" || -L "$f" ]] || continue
       b=$(basename "$f" .conf)
       [[ -f "$SRC/container/$b.conf" ]] || continue
       grep -qw -- "$b" <<<"$LIST" || { echo "    removing stale drop-in: $b"; rm -f "$f"; }
@@ -88,7 +90,7 @@ install name=mybox_name *dropins:
     # installed box still has 10-gui.
     if grep -qw -- 10-gui <<<"$LIST"; then
       mkdir -p "{{host_unit_dir}}"
-      install -m0644 "$SRC/host/mybox-gui.service" "{{host_unit_dir}}/mybox-gui.service"
+      ln -sfn "$SRC/host/mybox-gui.service" "{{host_unit_dir}}/mybox-gui.service"
       systemctl --user daemon-reload
       systemctl --user enable mybox-gui.service
       if systemctl --user is-active -q graphical-session.target; then
@@ -103,22 +105,24 @@ install name=mybox_name *dropins:
     echo "    drop-ins: $LIST"
     echo "    start:    just start $NAME"
 
-# Keeps which drop-ins each box selects.
+# Repoints every installed link at this checkout (and turns copies from
+# older installs into links), keeping which drop-ins each box selects.
 #
-# Re-copy the installed template and every box's drop-ins from this repo.
+# Relink the template, every box's drop-ins and the host unit, then daemon-reload.
 sync:
     #!/usr/bin/env bash
     set -euo pipefail
-    SRC="{{mybox_dir}}"; QD="{{quadlet_dir}}"
-    [[ -e "$QD/mybox@.container" ]] || { echo "ERROR: mybox is not installed — run: just install" >&2; exit 1; }
-    install -m0644 "$SRC/mybox@.container" "$QD/mybox@.container"
+    SRC="{{mybox_dir}}"; QD="{{quadlet_dir}}"; HU="{{host_unit_dir}}/mybox-gui.service"
+    [[ -e "$QD/mybox@.container" || -L "$QD/mybox@.container" ]] ||
+      { echo "ERROR: mybox is not installed — run: just install" >&2; exit 1; }
+    ln -sfn "$SRC/mybox@.container" "$QD/mybox@.container"
     for f in "$QD"/mybox@*.container.d/*.conf; do
-      [[ -e "$f" ]] || continue
+      [[ -e "$f" || -L "$f" ]] || continue
       b=$(basename "$f" .conf)
-      [[ -f "$SRC/container/$b.conf" ]] && install -m0644 "$SRC/container/$b.conf" "$f"
+      [[ -f "$SRC/container/$b.conf" ]] && ln -sfn "$SRC/container/$b.conf" "$f"
     done
-    if [[ -e "{{host_unit_dir}}/mybox-gui.service" ]]; then
-      install -m0644 "$SRC/host/mybox-gui.service" "{{host_unit_dir}}/mybox-gui.service"
+    if [[ -e "$HU" || -L "$HU" ]]; then
+      ln -sfn "$SRC/host/mybox-gui.service" "$HU"
     fi
     systemctl --user daemon-reload
 
@@ -130,7 +134,7 @@ start name=mybox_name:
 stop name=mybox_name:
     systemctl --user stop "mybox@{{name}}.service"
 
-# Re-copies first, so edit-then-restart applies the edit.
+# Syncs first, so edit-then-restart applies the edit.
 #
 # Recreate a box against the current image + drop-ins.
 restart name=mybox_name: sync

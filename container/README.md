@@ -30,14 +30,14 @@ A throwaway box is just another name, `just install test` →
 
 ## Usage
 
-`just install [name] [drop-ins…]` copies the chosen set (see the repo
-justfile). It substitutes nothing, so copying by hand gives exactly the
-same result:
+`just install [name] [drop-ins…]` symlinks the chosen set from the
+checkout (see the repo justfile). It substitutes nothing, so linking by
+hand gives exactly the same result:
 
 ```bash
 Q=~/.config/containers/systemd
 mkdir -p $Q/mybox@dev.container.d
-cp container/20-gpu.conf container/30-nvidia.conf $Q/mybox@dev.container.d/
+ln -s "$PWD"/container/{20-gpu,30-nvidia}.conf $Q/mybox@dev.container.d/
 systemctl --user daemon-reload
 systemctl --user restart mybox@dev
 ```

@@ -5,7 +5,8 @@ PID 1, running as a **rootless podman user quadlet** on top of an
 immutable host OS (sibling projects [myos](https://github.com/aboglioli/myos)
 / [myosi](https://github.com/aboglioli/myosi), or any Linux host with
 podman ≥ 5). The `mybox@.container` template plus `container/*.conf`
-drop-ins are copied under `~/.config/containers/systemd`, and the owning
+drop-ins are symlinked from this checkout into
+`~/.config/containers/systemd`, and the owning
 account's systemd user manager owns the lifecycle. Nothing about it is
 host root. Every box is a named instance, `mybox@<name>.service`, and the
 name is also its hostname, container name and state directory
@@ -154,7 +155,7 @@ A desktop box under your own account — its apps on your compositor, the
 GPU through CDI:
 
 ```bash
-just install        # box `mybox`: copy template + default drop-ins, daemon-reload
+just install        # box `mybox`: link template + default drop-ins, daemon-reload
 just build          # OPTIONAL: local build over the published reference,
                     # into YOUR rootless store; skip it and the quadlet
                     # pulls ghcr.io/aboglioli/mybox instead
@@ -190,10 +191,17 @@ myenv storage convention. On myosi both exist already.
 | Recipe | What it does |
 |---|---|
 | `just build` | local build tagged over the published reference, into your rootless store |
-| `just install [name] [drop-ins…]` | **copy** the template + the box's chosen drop-ins to `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. With `10-gui` it also installs and enables `host/mybox-gui.service` |
+| `just install [name] [drop-ins…]` | **symlink** the template + the box's chosen drop-ins into `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. With `10-gui` it also links and enables `host/mybox-gui.service` |
 | `just start` / `stop [name]` | start/stop the box — stop removes the container; the state survives |
-| `just sync` | re-copy the template and every box's drop-ins from this repo, without changing which drop-ins each box selects |
+| `just sync` | repoint every installed link at this checkout (and turn copies from older installs into links), then `daemon-reload` |
 | `just restart [name]` | `sync`, then recreate against the current image + drop-ins |
+
+The links point into the checkout you ran `just install` from, so an
+edit there is live at the next `just restart`. Install from the checkout
+you keep: deleting it (a worktree, say) leaves dangling units, and
+switching its branch changes the box at its next restart. Editing an
+installed drop-in edits the repo file; keep host-local settings in a
+drop-in of your own name, as with the SSH port above.
 | `just status` | unit + container state of every box |
 | `just logs [name]` | follow the box's journal |
 | `just enter [name] [user]` | fast shell (`podman exec`, no PAM session) |
@@ -244,8 +252,8 @@ anything holding keys should be `0700`.
 ## Installing by hand
 
 Every file is **correct exactly as it sits in this repo**. `just install`
-copies them and generates nothing, so `cp` by hand gives a
-byte-identical install:
+symlinks them and generates nothing, so `ln -s` by hand gives the same
+install:
 
 | Repo file | Installs to |
 |---|---|
@@ -257,11 +265,12 @@ byte-identical install:
 ```bash
 Q=~/.config/containers/systemd
 mkdir -p $Q/mybox@mybox.container.d ~/.config/systemd/user
-cp mybox@.container $Q/
+ln -s "$PWD/mybox@.container" $Q/
 ln -s mybox@.container $Q/mybox@mybox.container
-cp container/01-boot.conf container/10-gui.conf container/20-gpu.conf \
-   container/30-nvidia.conf container/85-publish-ssh.conf $Q/mybox@mybox.container.d/
-cp host/mybox-gui.service ~/.config/systemd/user/
+for d in 01-boot 10-gui 20-gpu 30-nvidia 85-publish-ssh; do
+  ln -s "$PWD/container/$d.conf" $Q/mybox@mybox.container.d/
+done
+ln -s "$PWD/host/mybox-gui.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now mybox-gui.service
 systemctl --user start mybox@mybox

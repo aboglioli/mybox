@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Install Homebrew for the login user. Runs at boot via
+# mybox-homebrew.service until it has succeeded once.
+#
+# Not baked into the image: the prefix lives under /home, which is a
+# bind from the host and hides anything the image puts there, and it must
+# belong to a user that only exists once mybox-user-setup has run.
+#
+# /home/linuxbrew/.linuxbrew is the one prefix Homebrew's bottles are
+# built for; anywhere else most formulae compile from source.
+#
+# Homebrew's documented manual install, not its install.sh: a shallow
+# clone of the brew repository plus the bin/brew link. bin/brew is
+# created LAST, after `brew update` has fetched the latest release and its
+# portable Ruby, so it doubles as the success marker the unit's
+# ConditionPathExists= checks — a failed attempt leaves no link and is
+# retried, from scratch, on the next boot.
+set -euo pipefail
+
+# Same source as user-setup: PID 1's environment carries podman's.
+while IFS='=' read -r -d '' k v; do
+    case "$k" in MYBOX_UID) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+done < /proc/1/environ
+
+uid="${MYBOX_UID:-1000}"
+# By uid, not MYBOX_USER: user-setup retargets to whoever owns the uid
+# when the name changed after first boot.
+entry=$(getent passwd "$uid") || { echo "homebrew-setup: no account with uid $uid" >&2; exit 1; }
+name=${entry%%:*}
+gid=$(id -g "$name")
+
+prefix=/home/linuxbrew/.linuxbrew
+[ -x "$prefix/bin/brew" ] && exit 0
+
+install -d -m 0755 -o "$uid" -g "$gid" /home/linuxbrew "$prefix"
+rm -rf "$prefix/Homebrew"
+
+as_user() {
+    runuser -u "$name" -- env HOME="$(getent passwd "$name" | cut -d: -f6)" \
+        HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 "$@"
+}
+
+as_user git clone --quiet --depth=1 https://github.com/Homebrew/brew "$prefix/Homebrew"
+as_user "$prefix/Homebrew/bin/brew" update --force --quiet
+as_user mkdir -p "$prefix/bin"
+as_user ln -sfn ../Homebrew/bin/brew "$prefix/bin/brew"
+echo "homebrew-setup: $(as_user "$prefix/bin/brew" --version | head -1) installed for $name"

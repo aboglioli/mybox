@@ -78,10 +78,15 @@ install name=mybox_name *dropins:
     done
     # Declarative: drop what is no longer in LIST. "Ours" is decided by
     # name — hand-written local drop-ins have no counterpart in container/
-    # and are left alone.
+    # and are left alone. A dangling link always goes: its drop-in was
+    # deleted from the repo, and quadlet fails on every reload while the
+    # link remains.
     for f in "$DIR"/*.conf; do
       [[ -e "$f" || -L "$f" ]] || continue
       b=$(basename "$f" .conf)
+      if [[ -L "$f" && ! -e "$f" ]]; then
+        echo "    removing deleted drop-in: $b"; rm -f "$f"; continue
+      fi
       [[ -f "$SRC/container/$b.conf" ]] || continue
       grep -qw -- "$b" <<<"$LIST" || { echo "    removing stale drop-in: $b"; rm -f "$f"; }
     done
@@ -107,6 +112,7 @@ install name=mybox_name *dropins:
 
 # Repoints every installed link at this checkout (and turns copies from
 # older installs into links), keeping which drop-ins each box selects.
+# Links to drop-ins deleted from the repo are removed.
 #
 # Relink the template, every box's drop-ins and the host unit, then daemon-reload.
 sync:
@@ -119,7 +125,11 @@ sync:
     for f in "$QD"/mybox@*.container.d/*.conf; do
       [[ -e "$f" || -L "$f" ]] || continue
       b=$(basename "$f" .conf)
-      [[ -f "$SRC/container/$b.conf" ]] && ln -sfn "$SRC/container/$b.conf" "$f"
+      if [[ -f "$SRC/container/$b.conf" ]]; then
+        ln -sfn "$SRC/container/$b.conf" "$f"
+      elif [[ -L "$f" && ! -e "$f" ]]; then
+        echo "removing deleted drop-in: ${f#"$QD"/}"; rm -f "$f"
+      fi
     done
     if [[ -e "$HU" || -L "$HU" ]]; then
       ln -sfn "$SRC/host/mybox-gui.service" "$HU"

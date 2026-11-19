@@ -1,0 +1,49 @@
+# mybox-gaming — the mybox base plus Steam, Proton and the 32-bit GPU
+# stack Windows games need.
+#
+# Built FROM the base so the dev box stays small; CI builds the base,
+# then this on top of it (`just build-gaming` locally).
+#
+# 64-bit NVIDIA userland arrives through CDI like on the base. 32-bit
+# does not — CDI specs carry none — so mybox-nvidia32.service installs
+# the 32-bit half of the HOST's exact driver version at boot, and again
+# whenever the host driver changes.
+
+ARG BASE=ghcr.io/aboglioli/mybox:latest
+FROM ${BASE}
+
+# Steam's vulkan-driver/lib32-vulkan-driver dependencies are satisfied
+# with mesa's Intel and AMD drivers named explicitly — left to pacman,
+# --noconfirm picks the first provider, which is not one you want.
+# NVIDIA's come from the host (64-bit) and mybox-nvidia32 (32-bit).
+#
+#   steam                       client; Proton is a download it manages
+#   ttf-liberation              its ttf-font, metric-compatible with Windows fonts
+#   umu-launcher                Proton outside Steam, for any Windows exe
+#   gamescope                   per-game compositor: scaling, HDR, fps cap
+#   mangohud                    fps/frametime overlay
+#
+# Not gamemode: rootless, the box's hard nice limit is 0 and only host root
+# can raise it, so it cannot renice anything — and its limits.d entry
+# (`@gamemode - nice -10`) makes pam_limits fail every session of a user
+# in its group, the user manager included. The CPU governor it would set
+# is host sysfs.
+# archlinux:base ships no [multilib] section to uncomment, so add one.
+RUN printf '\n[multilib]\nInclude = /etc/pacman.d/mirrorlist\n' >> /etc/pacman.conf && \
+    pacman -Syu --noconfirm --needed \
+        steam ttf-liberation umu-launcher gamescope \
+        mangohud lib32-mangohud \
+        vulkan-radeon lib32-vulkan-radeon vulkan-intel lib32-vulkan-intel \
+        lib32-vulkan-icd-loader lib32-libglvnd lib32-mesa && \
+    pacman -Scc --noconfirm && \
+    rm -rf /var/cache/pacman/pkg/* /usr/share/doc /usr/share/info
+
+COPY system/usr /usr
+RUN chmod +x /usr/libexec/mybox/nvidia32 && \
+    systemctl preset mybox-nvidia32.service
+
+# The base froze /etc into the factory tree before this layer existed.
+RUN rm -rf /usr/share/factory/etc && cp -a /etc /usr/share/factory/etc
+
+LABEL org.opencontainers.image.title="mybox-gaming" \
+      org.opencontainers.image.description="mybox with Steam, Proton and the 32-bit GPU stack"

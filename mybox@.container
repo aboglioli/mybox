@@ -1,0 +1,163 @@
+# mybox@.container — rootless system container quadlet (systemd PID 1).
+#
+# A USER quadlet: it runs under the host account that owns it, through
+# that account's rootless podman, and no part of it is host root. Two
+# ways to run it, same file:
+#
+#   your own account      ~/.config/containers/systemd/ — the box user
+#                         IS you (keep-id below), so host sockets, files
+#                         and devices you can open, it can open. Starts
+#                         with your session (10-gui.conf) or your user
+#                         manager (01-boot.conf + linger).
+#   a dedicated account   a system user that owns nothing but the box
+#                         (README "Isolated box"). Boot-starts through
+#                         linger; an escape lands in an account with
+#                         nothing worth taking.
+#
+# A template: the instance name is the box. mybox@dev.service is a box
+# with hostname and container name `dev` and its state in
+# /srv/users/<uid>/dev, independent of every other instance. Each box is
+# a symlink mybox@<name>.container → mybox@.container, so its own
+# mybox@<name>.container.d/ drop-ins (and their [Install]) apply to it
+# alone; mybox@.container.d/ applies to all. NOTE: %i keeps dashes
+# literally; %I would unescape them to slashes — never use %I here.
+#
+# Install: `just install [name] [drop-ins…] && just start [name]`, or by
+# hand (README "Installing by hand"), then `systemctl --user daemon-reload &&
+# systemctl --user start mybox@<name>`.
+#
+# Lifecycle:
+#   config change   edit drop-in → daemon-reload → restart (state kept)
+#   image rebase    pull/build image → restart
+#   factory reset   stop → rm -rf /srv/users/<uid>/<name>/{etc,usr}/diff → start
+
+[Unit]
+Description=%i — rootless system container (systemd PID 1)
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/users/%U
+
+[Container]
+ContainerName=%i
+HostName=%i
+# Published from CI on release tags (YYYY.MM.DD[.XX]); :latest tracks
+# the newest release and lets AutoUpdate=registry roll forward. Pin a
+# date tag here to freeze. Local dev: `just build` tags a local build
+# over this same reference in YOUR rootless store.
+Image=ghcr.io/aboglioli/mybox:latest
+# Not /sbin/init directly: the pre-init assembles the root filesystem
+# (every image-owned tree as an overlay over the host state bind) and then
+# execs systemd, which PID 1 could not do for itself — it reads /etc before
+# any unit runs. podman still treats this as a systemd container because
+# --systemd=always is set explicitly below.
+Exec=/usr/libexec/mybox/preinit
+
+# The box's uid 1000 IS the host account running it; everything else —
+# box root included — maps into that account's subuid range, which owns
+# nothing on the host. So box root is nobody out here, and the login
+# user can reach exactly what the owning account can: its wayland and
+# pipewire sockets, the devices its ACLs open (logind's uaccess grants
+# game controllers to the seat user, never keyboards), and nothing else.
+UserNS=keep-id:uid=1000,gid=1000
+# keep-id also makes that uid the one podman starts the entrypoint as;
+# PID 1 has to be box root, or the pre-init cannot mount a thing.
+User=0
+Group=0
+
+# Capabilities exist only inside the box's own user namespace, so none
+# of them reaches the host. SYS_ADMIN: the pre-init's overlays, systemd,
+# nested podman and bwrap. NET_ADMIN/NET_RAW: nested ROOTFUL podman
+# (`sudo podman run` makes netavark build a bridge in the box's netns,
+# `Netlink error: Operation not permitted` without it), wireguard and
+# tailscale, ping. SYS_NICE: realtime audio and gamemode.
+AddCapability=SYS_ADMIN NET_ADMIN NET_RAW SYS_NICE
+
+# SELinux: container_t is denied the GPU's device nodes (NVML reports
+# "Insufficient Permissions") and breaks systemd's boot. Default seccomp
+# and /proc masking stay on.
+SecurityLabelDisable=true
+
+# No [Container] key for these (podman 5.x/6.x).
+PodmanArgs=--systemd=always
+PodmanArgs=--cgroupns=private
+
+Tmpfs=/run
+Tmpfs=/tmp
+Tmpfs=/var/tmp
+
+# podman's 64M default /dev/shm crashes Chromium and Electron apps, Steam's
+# web helper among them, and starves Wine/Proton. A ceiling, not a
+# reservation: the tmpfs only holds what is written to it.
+ShmSize=4g
+
+# Persistent state — REQUIRED, not a drop-in. The container is
+# recreated on every stop/reload/boot, so everything writable lives on
+# the host under /srv/users/<uid>/<name>, the rootless half of the
+# myenv storage convention.
+#
+# ONE bind carries the system state. /.mybox holds an overlay upper per
+# image-owned tree, which /usr/libexec/mybox/preinit mounts before systemd
+# starts:
+#
+#   /.mybox/etc  ->  /etc  (overlay)   /.mybox/usr  ->  /usr (overlay)
+#   /.mybox/var  ->  /var  (bind)      /.mybox/opt  ->  /opt (bind)
+#
+# It is mounted at a path that is NEVER itself overlaid, because the kernel
+# refuses overlayfs as an upperdir — an upper stored inside /var stops
+# working the moment /var is an overlay.
+#
+# /home and /srv stay plain binds: they hold no image content to layer
+# over, and /srv is empty by contract for nested quadlets to fill.
+#
+# No :idmap — rootless podman cannot create idmapped mounts
+# (mount_setattr: Operation not permitted). keep-id makes it unnecessary:
+# the login user's files are the owning account's files, and files box
+# root writes land in its subuid range, stable across recreations.
+EnvironmentFile=/srv/users/%U/%i/container.env
+Volume=/srv/users/%U/%i:/.mybox
+Volume=/srv/users/%U/%i/home:/home
+Volume=/srv/users/%U/%i/srv:/srv
+
+# /dev/net/tun: pasta opens it in-namespace — without it every nested
+# rootless `podman run` fails. /dev/fuse: flatpak's document portal
+# (hard FUSE dep) + the fuse-overlayfs storage fallback on ephemeral
+# runs. Devices only — no extra capabilities for this.
+AddDevice=/dev/fuse
+AddDevice=/dev/net/tun
+
+# pasta: the box shares the host's addresses and reaches everything the
+# owning account can; inbound only through PublishPort= (85-publish-ssh).
+# Rootless cannot put the box on the LAN with its own address — no
+# macvlan, no host bridge.
+Network=pasta
+
+AutoUpdate=registry
+
+# The workload is a full systemd PID 1 — journald flush, nested podman
+# containers, unit stop jobs — and podman's 10s default expires long before
+# that finishes, so every stop ends in SIGKILL and the unit lands in
+# `failed`. Quadlet does NOT derive systemd's own stop timeout from this,
+# so TimeoutStopSec= in [Service] has to be raised to match.
+StopTimeout=45
+
+[Service]
+Restart=on-failure
+TimeoutStartSec=600
+
+# The state dirs are created on demand, so a new instance just works. Nothing is SEEDED: each tree's content comes from the image as the
+# overlay's lower, so an empty upper is a complete /etc, and a newer image's
+# changes show through instead of being frozen at whatever was copied once.
+#
+# Only the two bind SOURCES podman needs before the box exists. The trees
+# the pre-init assembles it creates itself, as box root — created out here
+# they would belong to the box's login user.
+ExecStartPre=/usr/bin/mkdir -p /srv/users/%U/%i/home /srv/users/%U/%i/srv
+# EnvironmentFile= above is fatal when absent, so guarantee it exists.
+ExecStartPre=/usr/bin/touch /srv/users/%U/%i/container.env
+
+# Must exceed StopTimeout= above (podman's own wait), or systemd kills the
+# unit first and the 45s is never actually available.
+TimeoutStopSec=60
+
+# No [Install]: whether the box starts on its own is a per-instance
+# drop-in choice — 01-boot.conf starts it with the user manager.

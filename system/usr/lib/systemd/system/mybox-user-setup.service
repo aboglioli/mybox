@@ -2,7 +2,7 @@
 # MYBOX_GID / MYBOX_SHELL env vars (podman env → PID 1 → this script).
 # The image bakes NO user — one generic image serves any box; each
 # container names its user at runtime (quadlet Environment= drop-in,
-# EnvironmentFile=/srv/<name>/container.env, or `-e` flags). `user` is
+# EnvironmentFile=/srv/users/<uid>/<name>/container.env, or `-e` flags). `user` is
 # only the default when nothing is set.
 #
 # This script leaves the account fully usable: account + primary group,

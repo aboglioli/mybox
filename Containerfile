@@ -16,7 +16,13 @@ FROM docker.io/archlinux:base
 
 # systemd is already in archlinux:base; --needed makes it a no-op.
 # Groups: service stack / shell+scm / modern cli / nested podman /
-# flatpak / extras.
+# flatpak / GPU dispatch / X11 on wayland / extras.
+# libglvnd + vulkan-icd-loader are the dispatch layers the GPU's vendor
+# libraries plug into: CDI injects NVIDIA's (libGLX_nvidia, the Vulkan
+# ICD) from the host, mesa covers Intel/AMD, and without the loaders
+# neither is reachable from any app. xorg-xwayland + xwayland-satellite
+# give X11 apps (Steam's client among them) a DISPLAY on the host's
+# compositor; mybox-xwayland.path starts them when it is there.
 # Nested podman is crun + pasta + netavark; slirp4netns is gone
 # (podman 6 removed it) and buildah/skopeo are vendored into podman.
 # fuse-overlayfs stays ONLY as the storage fallback for ephemeral runs:
@@ -33,7 +39,8 @@ RUN pacman-key --init && \
         rsync unzip diffutils \
         podman crun fuse-overlayfs passt \
         netavark aardvark-dns \
-        flatpak xdg-utils \
+        flatpak xdg-utils xorg-xwayland xwayland-satellite \
+        libglvnd vulkan-icd-loader mesa \
         age atuin dust lazygit zellij diffnav && \
     pacman -Scc --noconfirm && \
     rm -rf /var/cache/pacman/pkg/* /var/log/* /tmp/* \
@@ -45,8 +52,7 @@ RUN pacman-key --init && \
 
 # Build-time-only payload, dropped above: headers, static archives and
 # pkg-config/cmake metadata are ~130 MB of a ~1.4 GB image and the image
-# ships no compiler, so nothing here can consume them. install-nvidia is
-# unaffected — it runs the .run with --no-kernel-modules, i.e. no toolchain.
+# ships no compiler, so nothing here can consume them.
 #
 # The trade: if you later install a compiler INSIDE, headers for packages
 # that are already installed are gone. `pacman -S <pkg>` reinstalls them.
@@ -69,6 +75,16 @@ ENV LANG=en_US.UTF-8 \
 RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
     setcap cap_setgid+ep /usr/bin/newgidmap
 
+# pam_limits from required to optional. The box runs rootless, so its hard
+# limits are the owning account's and nothing inside can raise them; any
+# package shipping a limits.d entry above them (gamemode's `nice -10`,
+# realtime-privileges' rtprio and memlock) would otherwise fail EVERY
+# session of a user it names, systemd's user@.service included. Optional,
+# the limits that fit still apply and the rest are skipped with a log line.
+RUN sed -i -E 's/^(session[[:space:]]+)required([[:space:]]+pam_limits\.so)/\1optional\2/' \
+        /etc/pam.d/su /etc/pam.d/su-l /etc/pam.d/system-auth /etc/pam.d/system-services && \
+    ! grep -rqE '^session[[:space:]]+required[[:space:]]+pam_limits' /etc/pam.d
+
 # Wire units via 50-mybox.preset; pre-create machine-id so first boot
 # doesn't generate one (would fail under a persistent /var overlay).
 #
@@ -81,7 +97,7 @@ RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
 #
 #   podman.socket / podman-restart.service  rootless API socket +
 #       resume of the user's --restart=always containers after a boot
-#   mybox-host-sockets / mybox-xwayland     GUI wiring; both self-gate
+#   mybox-host-sockets / mybox-xwayland.path  GUI wiring; both self-gate
 #       on Condition= so they are clean no-ops in a headless container
 #
 # pipewire.socket is DISABLED for the opposite reason. pipewire arrives
@@ -90,7 +106,7 @@ RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
 # host sockets are bind-mounted at /mnt/host and linked into
 # XDG_RUNTIME_DIR, and a nested daemon racing to create its own
 # pipewire-0 there shadows them — silence, intermittently. A
-# compositor-INSIDE container (50-desktop.conf) enables it explicitly.
+# box that runs its own compositor (a streaming server) enables it.
 #
 # systemd-sysusers runs HERE, at build time, so the users and groups
 # mybox declares are already in the /etc that every box overlays. The
@@ -100,7 +116,7 @@ RUN setcap cap_setuid+ep /usr/bin/newuidmap && \
 # depending on that condition firing.
 RUN systemctl preset-all && \
     systemctl --global enable podman.socket podman-restart.service \
-                              mybox-host-sockets.service mybox-xwayland.service && \
+                              mybox-host-sockets.service mybox-xwayland.path && \
     systemctl --global disable pipewire.socket pipewire.service && \
     systemd-sysusers && \
     systemd-machine-id-setup

@@ -1,0 +1,3 @@
+# Sorts before the base's 50-mybox.preset, whose `disable *` would
+# otherwise win.
+enable mybox-nvidia32.service

@@ -1,0 +1,21 @@
+# Install the 32-bit half of the host's NVIDIA driver, matched to the
+# exact version the host kernel runs. See /usr/libexec/mybox/nvidia32.
+#
+# A no-op when the version already matches, and skipped on a host with
+# no NVIDIA module at all.
+[Unit]
+Description=Match 32-bit NVIDIA userland to the host driver
+ConditionPathExists=/sys/module/nvidia/version
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# `-`: an offline boot must not mark the box degraded; 32-bit games just
+# lack the GPU until the next boot with a network.
+ExecStart=-/usr/libexec/mybox/nvidia32
+TimeoutStartSec=15min
+
+[Install]
+WantedBy=multi-user.target

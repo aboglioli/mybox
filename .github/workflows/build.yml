@@ -36,7 +36,7 @@ jobs:
           sudo apt-get update && sudo apt-get install -y shellcheck
           shopt -s globstar nullglob
           for f in system/usr/libexec/mybox/* system/usr/local/bin/mybox \
-                   system/etc/profile.d/*.sh; do
+                   system/etc/profile.d/*.sh gaming/system/usr/libexec/mybox/*; do
             [ -f "$f" ] || continue
             shellcheck -S warning "$f"
           done
@@ -68,6 +68,8 @@ jobs:
             # Enablement is baked at build time, so its absence is a
             # build bug, not a runtime surprise.
             test -L /usr/share/factory/etc/systemd/user/default.target.wants/mybox-host-sockets.service
+            test -L /usr/share/factory/etc/systemd/user/default.target.wants/mybox-xwayland.path
+            test -x /usr/bin/xwayland-satellite
             test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-user-setup.service
 
             # sysusers ran at build time, so declared accounts exist in
@@ -83,35 +85,68 @@ jobs:
           '
 
       - name: Validate the quadlet
-        # mybox.container carries the mandatory state binds now, so a
-        # syntax error in it breaks every box at once.
+        # mybox@.container carries the mandatory state binds, so a syntax
+        # error in it breaks every box at once. Two instances, laid out the
+        # way `just install` does it: `full` with every drop-in (none of
+        # them conflicts with another), `bare` with none — which also
+        # proves an instance's drop-ins stay in that instance.
         #
-        # quadlet comes from the image we just built, NOT the runner:
-        # the generator's path is distro-specific (Arch symlinks it to
-        # ../../podman/quadlet, Fedora to ../../../libexec/podman/
-        # quadlet) and the ubuntu-24.04 runner ships no such file at
-        # all, which is how the first version of this step died.
+        # quadlet comes from the image we just built, NOT the runner: the
+        # ubuntu-24.04 runner ships none, and its path is distro-specific.
         run: |
           podman run --rm --security-opt label=disable -v "$PWD:/src:ro" \
-            "$IMAGE:latest" bash -ec '
-              mkdir -p /etc/containers/systemd
-              cp /src/mybox.container /src/container/mybox-nat.network \
-                 /etc/containers/systemd/
-              /usr/lib/systemd/system-generators/podman-system-generator \
-                 --dryrun > /tmp/q.out
+            --entrypoint bash "$IMAGE:latest" -ec '
+              mkdir -p /tmp/q/mybox@full.container.d
+              cp /src/mybox@.container /tmp/q/
+              ln -s mybox@.container /tmp/q/mybox@full.container
+              ln -s mybox@.container /tmp/q/mybox@bare.container
+              cp /src/container/*.conf /tmp/q/mybox@full.container.d/
+              QUADLET_UNIT_DIRS=/tmp/q /usr/lib/podman/quadlet -user -dryrun > /tmp/q.out
+              unit() { sed -n "/^---mybox@$1.service---/,/^---/p" /tmp/q.out; }
+              unit full > /tmp/full; unit bare > /tmp/bare
+              test -s /tmp/full; test -s /tmp/bare
 
-              # Persistence is not optional: the state dirs are created
-              # before start, the single state bind carries every overlay
-              # upper, and the data trees are bound alongside it.
-              grep -q "ExecStartPre=/usr/bin/mkdir -p /srv/%p/etc" /tmp/q.out
-              grep -q "/srv/%p:/.mybox:idmap" /tmp/q.out
-              for d in home srv; do
-                grep -q "/srv/%p/$d:/$d:idmap" /tmp/q.out
+              for u in /tmp/full /tmp/bare; do
+                # The instance name is the box: name, hostname, state.
+                grep -q -- "--name %i " $u
+                grep -q -- "--hostname %i " $u
+
+                # Persistence is not optional: the single state bind carries
+                # every overlay upper, and the data trees are bound beside it.
+                grep -q -- "-v /srv/users/%U/%i:/.mybox " $u
+                for d in home srv; do
+                  grep -q -- "-v /srv/users/%U/%i/$d:/$d " $u
+                done
+
+                # Box root must not be the owning account, and PID 1 must be
+                # box root running the pre-init, or nothing is overlaid.
+                grep -q -- "--userns keep-id:uid=1000,gid=1000" $u
+                grep -q -- "--user 0:0" $u
+                grep -q "libexec/mybox/preinit" $u
               done
 
-              # PID 1 must be the pre-init, or nothing is overlaid.
-              grep -q "libexec/mybox/preinit" /tmp/q.out
+              grep -q "^WantedBy=default.target" /tmp/full
+              grep -q "mybox-gaming" /tmp/full
+              ! grep -q "^WantedBy=" /tmp/bare
+              ! grep -q "mybox-gaming" /tmp/bare
             '
+
+      - name: Build gaming image
+        run: |
+          podman build \
+            --build-arg BASE="$IMAGE:latest" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.version=${GITHUB_REF_NAME}" \
+            -t "$IMAGE-gaming:latest" gaming
+
+      - name: Smoke test gaming image
+        run: |
+          podman run --rm --entrypoint bash "$IMAGE-gaming:latest" -ec '
+            test -x /usr/libexec/mybox/nvidia32
+            test -L /etc/systemd/system/multi-user.target.wants/mybox-nvidia32.service
+            pacman -Q steam umu-launcher gamescope lib32-vulkan-icd-loader >/dev/null
+            systemd-analyze verify /usr/lib/systemd/system/mybox-nvidia32.service
+          '
 
       - name: Push to GHCR
         if: startsWith(github.ref, 'refs/tags/')
@@ -121,3 +156,6 @@ jobs:
           podman login ghcr.io -u "${{ github.actor }}" -p "${{ secrets.GITHUB_TOKEN }}"
           podman push "$IMAGE:$TAG"
           podman push "$IMAGE:latest"
+          podman tag "$IMAGE-gaming:latest" "$IMAGE-gaming:$TAG"
+          podman push "$IMAGE-gaming:$TAG"
+          podman push "$IMAGE-gaming:latest"

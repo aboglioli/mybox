@@ -112,6 +112,8 @@ overlay_tree() {
         die "/$tree is already a mountpoint — something mounted it before the pre-init"
     fi
     mkdir -p "/$tree" "$upper" "$work" || die "cannot create $STATE/$tree"
+    # The upper's own owner becomes the owner of the mounted /$tree.
+    own_by_root "$STATE/$tree" "$upper" "$work"
 
     publish_lower "$tree"
 
@@ -134,7 +136,21 @@ bind_tree() {
         die "/$tree is already a mountpoint — something mounted it before the pre-init"
     fi
     mkdir -p "/$tree" "$STATE/$tree" || die "cannot create $STATE/$tree"
+    own_by_root "$STATE/$tree"
     mount --bind "$STATE/$tree" "/$tree" || die "could not bind /$tree"
+}
+
+# A directory the HOST created is owned by the host account, which keep-id
+# makes the box's login user — so /var would be the user's to write, and
+# systemd-tmpfiles refuses every path below it as an unsafe transition
+# (user-owned /var, root-owned /var/lib), silently skipping /var/lib/pacman.
+# Only the directory itself: what is inside was written from in here.
+own_by_root() {
+    local dir
+    for dir in "$@"; do
+        [ "$(stat -c %u:%g "$dir")" = 0:0 ] || chown 0:0 "$dir" ||
+            die "cannot take $dir for root — the box user would own it"
+    done
 }
 
 exec_init() {
@@ -147,6 +163,9 @@ exec_init() {
 
 mountpoint -q "$STATE" ||
     die "$STATE is not a mount — the host state bind is missing, so every write would die with the container"
+
+# podman's own binds, created on the host for the same reason.
+for dir in /home /srv; do own_by_root "$dir"; done
 
 park_runtime_mounts
 for tree in "${OVERLAY[@]}"; do overlay_tree "$tree"; done

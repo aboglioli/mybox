@@ -371,6 +371,37 @@ without a manual `usermod` — its group exists at the next boot and gets
 bound then. Variant images add their own groups by shipping a file in
 that directory instead of patching the script (see its `README`).
 
+## Homebrew
+
+Every box gets Homebrew for its login user, at
+`/home/linuxbrew/.linuxbrew`, the prefix its bottles are built for.
+It is not in the image: `/home` is a bind that hides anything the image
+puts there, and the prefix must belong to a user that only exists after
+`mybox-user-setup`. `mybox-homebrew.service` installs it instead, on the
+first boot with network, the way Homebrew documents a git install: a
+clone of the brew repository, `brew update` for the latest release and
+its portable Ruby, and a cleanup of the downloaded tarball. It takes a
+minute or two, does not hold up the boot, and retries on the next boot
+if it fails. Once `bin/brew` exists the unit skips itself.
+
+No stale downloads: Homebrew keeps the bottle of every installed
+version in `~/.cache/Homebrew` and its own cleanup never removes those.
+`mybox-homebrew-cleanup.timer` runs `brew cleanup --prune=all -s` weekly
+(and at the next boot if the box was off), which drops old versions and
+every cached download. Installed formulae stay; unused dependencies are
+already removed by `brew uninstall`.
+
+It lives in the box's `/home`, so it survives restarts and image
+updates, belongs to that one box, and is gone with the box's state.
+fish and bash sessions get `brew shellenv` once it is there (not root:
+brew refuses to run as root). Bottles need nothing else; a formula that
+builds from source needs `brew install gcc` first.
+
+```bash
+journalctl -u mybox-homebrew        # inside the box: how the install went
+systemctl list-timers mybox-homebrew-cleanup
+```
+
 ## Networking
 
 `Network=pasta`: the box shares the host's addresses and reaches whatever

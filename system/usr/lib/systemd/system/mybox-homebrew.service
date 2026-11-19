@@ -1,0 +1,22 @@
+# Install Homebrew for the login user on the box's first boot (see
+# /usr/libexec/mybox/homebrew-setup). Once it succeeds, bin/brew exists
+# in the persistent /home and the condition skips every later boot.
+#
+# Type=exec, not oneshot: a first install takes a minute or two, and a
+# oneshot would hold multi-user.target (and `is-system-running`) until it
+# finished. `-` because an offline boot must not mark the system
+# degraded; it simply tries again next boot.
+[Unit]
+Description=Install Homebrew for the login user
+Documentation=https://github.com/aboglioli/mybox/blob/main/README.md
+After=mybox-user-setup.service network-online.target
+Wants=network-online.target
+Requires=mybox-user-setup.service
+ConditionPathExists=!/home/linuxbrew/.linuxbrew/bin/brew
+
+[Service]
+Type=exec
+ExecStart=-/usr/libexec/mybox/homebrew-setup
+
+[Install]
+WantedBy=multi-user.target

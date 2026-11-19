@@ -1,0 +1,20 @@
+# Weekly Homebrew cleanup for the account that owns the prefix (see
+# mybox-homebrew-cleanup.timer).
+#
+# --prune=all drops old versions and every cached download; -s also
+# scrubs the downloads of CURRENT versions, which Homebrew's own
+# post-install cleanup keeps forever — on a desktop with a few dozen
+# formulae that alone grows past a gigabyte. Installed formulae and the
+# formula index stay. Unused dependencies are not touched here:
+# `brew uninstall` already autoremoves them.
+[Unit]
+Description=Remove Homebrew's old versions and cached downloads
+ConditionPathExists=/home/linuxbrew/.linuxbrew/bin/brew
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sh -c 'exec runuser -u "$(stat -c %%U /home/linuxbrew/.linuxbrew)" -- \
+    env HOME="$(getent passwd "$(stat -c %%u /home/linuxbrew/.linuxbrew)" | cut -d: -f6)" \
+    HOMEBREW_NO_ANALYTICS=1 /home/linuxbrew/.linuxbrew/bin/brew cleanup --prune=all -s'
+Nice=10
+IOSchedulingClass=idle

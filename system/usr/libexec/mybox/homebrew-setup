@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Install Homebrew for the login user. Runs at boot via
+# mybox-homebrew.service until it has succeeded once.
+#
+# Not baked into the image: the prefix lives under /home, which is a
+# bind from the host and hides anything the image puts there, and it must
+# belong to a user that only exists once mybox-user-setup has run.
+#
+# /home/linuxbrew/.linuxbrew is the one prefix Homebrew's bottles are
+# built for; anywhere else most formulae compile from source.
+#
+# Homebrew's documented git-clone install rather than install.sh, which
+# would be an unpinned script fetched at boot and wants sudo to create
+# the prefix. Same layout and the same repository as install.sh leaves:
+# not shallow, because the first `brew update` fetches every release tag
+# anyway and a shallow clone ends up the same size. bin/brew is created
+# LAST, so it doubles as the success marker the unit's
+# ConditionPathExists= checks — a failed attempt leaves no link and is
+# retried, from scratch, on the next boot.
+set -euo pipefail
+
+# Same source as user-setup: PID 1's environment carries podman's.
+while IFS='=' read -r -d '' k v; do
+    case "$k" in MYBOX_UID) [ -n "${!k:-}" ] || export "$k=$v" ;; esac
+done < /proc/1/environ
+
+uid="${MYBOX_UID:-1000}"
+# By uid, not MYBOX_USER: user-setup retargets to whoever owns the uid
+# when the name changed after first boot.
+entry=$(getent passwd "$uid") || { echo "homebrew-setup: no account with uid $uid" >&2; exit 1; }
+name=${entry%%:*}
+home=$(echo "$entry" | cut -d: -f6)
+gid=$(id -g "$name")
+
+prefix=/home/linuxbrew/.linuxbrew
+[ -x "$prefix/bin/brew" ] && exit 0
+
+install -d -m 0755 -o "$uid" -g "$gid" /home/linuxbrew "$prefix"
+rm -rf "$prefix/Homebrew"
+
+as_user() {
+    runuser -u "$name" -- env HOME="$home" HOMEBREW_NO_ANALYTICS=1 HOMEBREW_NO_ENV_HINTS=1 "$@"
+}
+brew="$prefix/Homebrew/bin/brew"
+
+as_user git clone --quiet https://github.com/Homebrew/brew "$prefix/Homebrew"
+as_user "$brew" update --force --quiet
+# The portable Ruby tarball update just unpacked; the formula index in
+# the cache stays, every install needs it.
+as_user "$brew" cleanup --prune=all -s >/dev/null || true
+as_user mkdir -p "$prefix/bin"
+as_user ln -sfn ../Homebrew/bin/brew "$prefix/bin/brew"
+echo "homebrew-setup: $(as_user "$prefix/bin/brew" --version | head -1) installed for $name"

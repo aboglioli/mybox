@@ -72,7 +72,6 @@ jobs:
             test -x /usr/bin/xwayland-satellite
             test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-user-setup.service
             test -L /usr/share/factory/etc/systemd/system/multi-user.target.wants/mybox-homebrew.service
-            test -L /usr/share/factory/etc/systemd/system/timers.target.wants/mybox-homebrew-cleanup.timer
             test -x /usr/libexec/mybox/homebrew-setup
 
             # sysusers ran at build time, so declared accounts exist in

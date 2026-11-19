@@ -44,7 +44,6 @@ enable flatpak-setup.service
 # Homebrew for the login user, installed under /home on the first boot
 # with network (runs until it has succeeded once).
 enable mybox-homebrew.service
-enable mybox-homebrew-cleanup.timer
 
 # Resume nested containers with --restart=always after a boot (the
 # outer quadlet recreates this container on every restart — without

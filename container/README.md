@@ -20,7 +20,6 @@ A throwaway box is just another name, `just install test` →
 | File | Adds |
 |---|---|
 | `01-boot.conf` | start with the owning user manager (`default.target`): at login, at boot with linger, and for the isolated account. Pairs with `10-gui` |
-| `02-gaming.conf` | the gaming image: Steam, umu-launcher, gamescope, mangohud, 32-bit GPU stack |
 | `05-user.conf` | template for pinning `MYBOX_USER`/`UID`/`GID`/`SHELL`/`AUTHORIZED_KEYS` in the repo — all commented, since per-box identity belongs in `/srv/users/<uid>/<name>/container.env` |
 | `10-gui.conf` | binds `%t/mybox-gui` at `/mnt/host`, where `host/mybox-gui.service` hard links your session's wayland / pipewire / pulse sockets while a session runs — the GUI comes and goes without restarting the box. Only under the desktop account itself |
 | `20-gpu.conf` | `/dev/dri`, `/dev/snd`, `/dev/input` — what the owning account may open, not keyboards |
@@ -31,14 +30,14 @@ A throwaway box is just another name, `just install test` →
 
 ## Usage
 
-`just install [name] [drop-ins…]` copies the chosen set (see the repo
-justfile). It substitutes nothing, so copying by hand gives exactly the
-same result:
+`just install [name] [drop-ins…]` symlinks the chosen set from the
+checkout (see the repo justfile). It substitutes nothing, so linking by
+hand gives exactly the same result:
 
 ```bash
 Q=~/.config/containers/systemd
 mkdir -p $Q/mybox@dev.container.d
-cp container/20-gpu.conf container/30-nvidia.conf $Q/mybox@dev.container.d/
+ln -s "$PWD"/container/{20-gpu,30-nvidia}.conf $Q/mybox@dev.container.d/
 systemctl --user daemon-reload
 systemctl --user restart mybox@dev
 ```

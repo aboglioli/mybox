@@ -5,7 +5,8 @@ PID 1, running as a **rootless podman user quadlet** on top of an
 immutable host OS (sibling projects [myos](https://github.com/aboglioli/myos)
 / [myosi](https://github.com/aboglioli/myosi), or any Linux host with
 podman ≥ 5). The `mybox@.container` template plus `container/*.conf`
-drop-ins are copied under `~/.config/containers/systemd`, and the owning
+drop-ins are symlinked from this checkout into
+`~/.config/containers/systemd`, and the owning
 account's systemd user manager owns the lifecycle. Nothing about it is
 host root. Every box is a named instance, `mybox@<name>.service`, and the
 name is also its hostname, container name and state directory
@@ -14,14 +15,12 @@ name is also its hostname, container name and state directory
 It is intended to feel like a small user OS, not an app container:
 real login sessions, SSH, background services, rootless and rootful
 podman inside, Flatpak, the GPU through CDI with nothing installed
-inside, KVM, and a gaming variant with Steam and Proton.
+inside, KVM. Apps beyond the base come from Flatpak, Homebrew or
+pacman inside the box, not from extra images.
 
 ```
 mybox/
 ├── Containerfile                # base image (Arch Linux + systemd PID 1)
-├── gaming/                      # gaming variant, FROM the base
-│   ├── Containerfile
-│   └── system/                  # mybox-nvidia32 (32-bit NVIDIA userland)
 ├── justfile                     # build images + install/drive the quadlet
 ├── mybox@.container             # rootless user quadlet template, one instance per box
 ├── container.env.example        # MYBOX_* runtime config template
@@ -156,7 +155,7 @@ A desktop box under your own account — its apps on your compositor, the
 GPU through CDI:
 
 ```bash
-just install        # box `mybox`: copy template + default drop-ins, daemon-reload
+just install        # box `mybox`: link template + default drop-ins, daemon-reload
 just build          # OPTIONAL: local build over the published reference,
                     # into YOUR rootless store; skip it and the quadlet
                     # pulls ghcr.io/aboglioli/mybox instead
@@ -170,7 +169,7 @@ drop-ins:
 
 ```bash
 just install dev                                     # default drop-ins
-just install games 01-boot 02-gaming 20-gpu 30-nvidia
+just install games 01-boot 20-gpu 30-nvidia
 just start games && just enter games
 ```
 
@@ -191,11 +190,18 @@ myenv storage convention. On myosi both exist already.
 
 | Recipe | What it does |
 |---|---|
-| `just build` / `build-gaming` | local build tagged over the published reference, into your rootless store |
-| `just install [name] [drop-ins…]` | **copy** the template + the box's chosen drop-ins to `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. With `10-gui` it also installs and enables `host/mybox-gui.service` |
+| `just build` | local build tagged over the published reference, into your rootless store |
+| `just install [name] [drop-ins…]` | **symlink** the template + the box's chosen drop-ins into `~/.config/containers/systemd`, `daemon-reload`. Declarative: removes previously-installed drop-ins not in the set. With `10-gui` it also links and enables `host/mybox-gui.service` |
 | `just start` / `stop [name]` | start/stop the box — stop removes the container; the state survives |
-| `just sync` | re-copy the template and every box's drop-ins from this repo, without changing which drop-ins each box selects |
+| `just sync` | repoint every installed link at this checkout (and turn copies from older installs into links), then `daemon-reload` |
 | `just restart [name]` | `sync`, then recreate against the current image + drop-ins |
+
+The links point into the checkout you ran `just install` from, so an
+edit there is live at the next `just restart`. Install from the checkout
+you keep: deleting it (a worktree, say) leaves dangling units, and
+switching its branch changes the box at its next restart. Editing an
+installed drop-in edits the repo file; keep host-local settings in a
+drop-in of your own name, as with the SSH port above.
 | `just status` | unit + container state of every box |
 | `just logs [name]` | follow the box's journal |
 | `just enter [name] [user]` | fast shell (`podman exec`, no PAM session) |
@@ -203,7 +209,7 @@ myenv storage convention. On myosi both exist already.
 
 `name` defaults to `mybox` and must be a valid hostname: lowercase
 letters, digits and inner dashes. Justfile knobs (env vars):
-`MYBOX_NAME`, `MYBOX_IMAGE`, `MYBOX_GAMING_IMAGE`, `MYBOX_USERNAME`,
+`MYBOX_NAME`, `MYBOX_IMAGE`, `MYBOX_USERNAME`,
 `MYBOX_DROPINS`. Everything else — GUI, GPU, devices, image variant,
 runtime user — is a drop-in in `container/` (see `container/README.md`).
 Persistence is not: it is part of `mybox@.container` and always on.
@@ -223,7 +229,7 @@ sudo loginctl enable-linger games        # its user manager starts at boot
 
 sudo machinectl shell games@ /bin/bash   # a shell as games, with its user bus
 git clone https://github.com/aboglioli/mybox && cd mybox  # your tree is not readable from here
-just install games 01-boot 02-gaming 20-gpu 30-nvidia
+just install games 01-boot 20-gpu 30-nvidia
 just start games
 ```
 
@@ -234,7 +240,7 @@ and bus.
 `01-boot.conf` starts it with that account's user manager, which linger
 brings up at boot — no login involved. Verified end to end: restarting
 the account's `user@<uid>.service` brought the box up on its own, with
-the GPU, the 32-bit NVIDIA service and box root at the account's first
+the GPU and box root at the account's first
 subuid.
 
 The account's sockets are not your desktop's, so this shape is headless:
@@ -246,8 +252,8 @@ anything holding keys should be `0700`.
 ## Installing by hand
 
 Every file is **correct exactly as it sits in this repo**. `just install`
-copies them and generates nothing, so `cp` by hand gives a
-byte-identical install:
+symlinks them and generates nothing, so `ln -s` by hand gives the same
+install:
 
 | Repo file | Installs to |
 |---|---|
@@ -259,11 +265,12 @@ byte-identical install:
 ```bash
 Q=~/.config/containers/systemd
 mkdir -p $Q/mybox@mybox.container.d ~/.config/systemd/user
-cp mybox@.container $Q/
+ln -s "$PWD/mybox@.container" $Q/
 ln -s mybox@.container $Q/mybox@mybox.container
-cp container/01-boot.conf container/10-gui.conf container/20-gpu.conf \
-   container/30-nvidia.conf container/85-publish-ssh.conf $Q/mybox@mybox.container.d/
-cp host/mybox-gui.service ~/.config/systemd/user/
+for d in 01-boot 10-gui 20-gpu 30-nvidia 85-publish-ssh; do
+  ln -s "$PWD/container/$d.conf" $Q/mybox@mybox.container.d/
+done
+ln -s "$PWD/host/mybox-gui.service" ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now mybox-gui.service
 systemctl --user start mybox@mybox
@@ -424,42 +431,27 @@ desktop app; offload to NVIDIA per app with
 `__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia` (Vulkan
 apps and DXVK pick the discrete GPU themselves).
 
-**32-bit** is the one thing CDI cannot do — specs carry no 32-bit
-libraries. The gaming variant covers it, below.
+## Games
 
-## Gaming variant
-
-`ghcr.io/aboglioli/mybox-gaming` is the base plus Steam, umu-launcher
-(Proton for any Windows exe, outside Steam), gamescope, mangohud and the
-32-bit GPU stack. Same box, different image: `02-gaming.conf` switches
-`Image=`, and an existing box keeps its state.
+No gaming image: Steam runs from Flathub inside the box.
 
 ```bash
-just install 01-boot 02-gaming 10-gui 20-gpu 30-nvidia 85-publish-ssh
+flatpak install --user flathub com.valvesoftware.Steam
+flatpak run com.valvesoftware.Steam
 ```
 
-**32-bit NVIDIA.** `mybox-nvidia32.service` reads the host driver version
-from `/sys/module/nvidia/version`, takes NVIDIA's own `.run` for exactly
-that version, extracts only its 32-bit libraries into `/usr/lib32` (the
-`/usr` overlay, so they persist) and writes the 32-bit Vulkan ICD. It is
-a no-op once the version matches, re-runs when the host driver changes,
-and removes the previous version's files through a manifest. The first
-boot after a driver change downloads ~400 MB; an offline boot just leaves
-32-bit games without the GPU until the next one.
-
-Steam's client opens on the host desktop through the box's Xwayland
-(verified: the sign-in window in niri). Verified with Steam's own
-`steam-runtime-system-info` inside pressure-vessel, the container Steam
-runs games in: Vulkan and GLX on
-NVIDIA for both i386 and x86_64. 32-bit EGL on X11 falls back to
-llvmpipe — games use GLX or Vulkan, so it rarely matters.
+CDI carries only the 64-bit NVIDIA libraries. Flatpak does not need
+them: it installs Flathub's `GL.nvidia-<version>` and
+`GL32.nvidia-<version>` extensions for the host's driver version, which
+give Steam and Proton both halves. gamescope and MangoHud are Flatpak
+extensions too (`com.valvesoftware.Steam.Utility.gamescope`,
+`org.freedesktop.Platform.VulkanLayer.MangoHud`).
 
 **Not included: gamemode.** Rootless, the box's hard nice limit is 0 and
 only host root can raise it, so gamemode cannot renice anything, and the
-CPU governor it would set is host sysfs. Worse, its limits.d entry made
-pam_limits fail every session of its group's members, user manager
-included. The base now makes pam_limits optional for exactly this class
-of package (see Security posture).
+CPU governor it would set is host sysfs. Its limits.d entry also makes
+pam_limits fail every session of its group's members, which is why the
+base makes pam_limits optional (see Security posture).
 
 **A streaming server** (Sunshine or similar, streaming a compositor that
 runs inside the box) fits the isolated account. Not shipped yet: it

@@ -15,11 +15,10 @@ set shell := ["bash", "-euo", "pipefail", "-c"]
 
 mybox_dir := justfile_directory()
 
-# Must match Image= in mybox@.container / container/02-gaming.conf. A
+# Must match Image= in mybox@.container. A
 # local build tags over the published reference in YOUR rootless store,
 # which is the store your user quadlet reads.
 mybox_image := env_var_or_default("MYBOX_IMAGE", "ghcr.io/aboglioli/mybox:latest")
-gaming_image := env_var_or_default("MYBOX_GAMING_IMAGE", "ghcr.io/aboglioli/mybox-gaming:latest")
 
 # Default box name for every recipe that takes one.
 mybox_name := env_var_or_default("MYBOX_NAME", "mybox")
@@ -44,10 +43,6 @@ default:
 build:
     podman build -t "{{mybox_image}}" "{{mybox_dir}}"
 
-# Build the gaming variant on top of the local base.
-build-gaming: build
-    podman build --build-arg BASE="{{mybox_image}}" -t "{{gaming_image}}" "{{mybox_dir}}/gaming"
-
 # COPIES, not symlinks into the repo: an isolated account cannot read
 # your working tree, and a copy keeps the box independent of whatever
 # branch is checked out. `just sync` pushes later repo edits.
@@ -56,7 +51,7 @@ build-gaming: build
 # digits and inner dashes. Name drop-ins to override the default set:
 #   just install                               # box `mybox`, default set
 #   just install dev                           # box `dev`, default set
-#   just install games 01-boot 02-gaming 20-gpu 30-nvidia
+#   just install games 01-boot 20-gpu 30-nvidia
 #
 # With 10-gui it also installs and enables host/mybox-gui.service, the
 # host user unit that shares the desktop session's sockets with every box.

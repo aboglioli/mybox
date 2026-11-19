@@ -384,12 +384,10 @@ its portable Ruby, and a cleanup of the downloaded tarball. It takes a
 minute or two, does not hold up the boot, and retries on the next boot
 if it fails. Once `bin/brew` exists the unit skips itself.
 
-No stale downloads: Homebrew keeps the bottle of every installed
-version in `~/.cache/Homebrew` and its own cleanup never removes those.
-`mybox-homebrew-cleanup.timer` runs `brew cleanup --prune=all -s` weekly
-(and at the next boot if the box was off), which drops old versions and
-every cached download. Installed formulae stay; unused dependencies are
-already removed by `brew uninstall`.
+Homebrew keeps the download of every installed version, and its own
+cleanup never removes those. The box does not clean it: that is the job
+of whatever manages your user environment — run `brew cleanup
+--prune=all -s` now and then, or schedule it with your dotfiles.
 
 It lives in the box's `/home`, so it survives restarts and image
 updates, belongs to that one box, and is gone with the box's state.
@@ -399,7 +397,6 @@ builds from source needs `brew install gcc` first.
 
 ```bash
 journalctl -u mybox-homebrew        # inside the box: how the install went
-systemctl list-timers mybox-homebrew-cleanup
 ```
 
 ## Networking

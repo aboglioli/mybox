@@ -176,10 +176,26 @@ logs name=mybox_name:
 # set — without it podman's working directory (/) stays, and SHELL stays
 # unset, so tmux, zellij or tuios fall back to bash.
 #
-# Login shell as USER (podman exec + runuser -l: own shell, home, SHELL).
+# Your terminal's TERM and COLORTERM go in with you: podman -t otherwise
+# says TERM=xterm and nothing about truecolor, and everything inside
+# drops to 16 colours. A TERM the box has no terminfo for falls back to
+# xterm-256color. -l clears the environment except TERM, so -w keeps
+# COLORTERM.
+#
+# Login shell as USER (podman exec + runuser -l: own shell, home, SHELL, your TERM).
 enter name=mybox_name user=mybox_username:
-    podman exec -it "{{name}}" runuser -l "{{user}}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TERM="${TERM:-xterm-256color}"
+    podman exec "{{name}}" infocmp "$TERM" >/dev/null 2>&1 || TERM=xterm-256color
+    export TERM
+    exec podman exec -it -e TERM -e COLORTERM "{{name}}" runuser -l -w COLORTERM "{{user}}"
 
 # Full PAM/logind session as USER (login -f, empty-password user).
 login name=mybox_name user=mybox_username:
-    podman exec -it "{{name}}" login -f "{{user}}"
+    #!/usr/bin/env bash
+    set -euo pipefail
+    TERM="${TERM:-xterm-256color}"
+    podman exec "{{name}}" infocmp "$TERM" >/dev/null 2>&1 || TERM=xterm-256color
+    export TERM
+    exec podman exec -it -e TERM -e COLORTERM "{{name}}" login -f "{{user}}"

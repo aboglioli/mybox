@@ -172,10 +172,25 @@ logs name=mybox_name:
 # bakes no user — the account lives in the /etc overlay, which only exists
 # inside the container's mount namespace.
 #
-# Fast shell as USER (podman exec, no PAM session).
+# -l makes it a login: the account's own shell, in its home, with SHELL
+# set — without it podman's working directory (/) stays, and SHELL stays
+# unset, so tmux, zellij or tuios fall back to bash.
+#
+# Your terminal's TERM and COLORTERM go in with you (-e copies them from
+# the terminal you run this in): podman -t otherwise says TERM=xterm and
+# nothing about truecolor, and everything inside drops to 16 colours. A
+# TERM the box has no terminfo for becomes xterm-256color, checked inside
+# the same exec. -l clears the environment except TERM, so -w keeps
+# COLORTERM.
+#
+# Login shell as USER (podman exec + runuser -l: own shell, home, SHELL, your TERM).
 enter name=mybox_name user=mybox_username:
-    podman exec -it "{{name}}" runuser -u "{{user}}" -- /usr/bin/fish -l
+    podman exec -it -e TERM -e COLORTERM "{{name}}" sh -c \
+      'infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; exec runuser -l -w COLORTERM "$1"' \
+      sh "{{user}}"
 
 # Full PAM/logind session as USER (login -f, empty-password user).
 login name=mybox_name user=mybox_username:
-    podman exec -it "{{name}}" login -f "{{user}}"
+    podman exec -it -e TERM -e COLORTERM "{{name}}" sh -c \
+      'infocmp "$TERM" >/dev/null 2>&1 || export TERM=xterm-256color; exec login -f "$1"' \
+      sh "{{user}}"

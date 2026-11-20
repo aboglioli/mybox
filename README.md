@@ -204,7 +204,7 @@ installed drop-in edits the repo file; keep host-local settings in a
 drop-in of your own name, as with the SSH port above.
 | `just status` | unit + container state of every box |
 | `just logs [name]` | follow the box's journal |
-| `just enter [name] [user]` | fast shell (`podman exec`, no PAM session) |
+| `just enter [name] [user]` | login shell (`podman exec` + `runuser -l`): the account's shell, in its home, with `SHELL` set |
 | `just login [name] [user]` | full PAM/logind session (`login -f`) |
 
 `name` defaults to `mybox` and must be a valid hostname: lowercase

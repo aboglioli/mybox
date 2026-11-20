@@ -172,9 +172,13 @@ logs name=mybox_name:
 # bakes no user — the account lives in the /etc overlay, which only exists
 # inside the container's mount namespace.
 #
-# Fast shell as USER (podman exec, no PAM session).
+# -l makes it a login: the account's own shell, in its home, with SHELL
+# set — without it podman's working directory (/) stays, and SHELL stays
+# unset, so tmux, zellij or tuios fall back to bash.
+#
+# Login shell as USER (podman exec + runuser -l: own shell, home, SHELL).
 enter name=mybox_name user=mybox_username:
-    podman exec -it "{{name}}" runuser -u "{{user}}" -- /usr/bin/fish -l
+    podman exec -it "{{name}}" runuser -l "{{user}}"
 
 # Full PAM/logind session as USER (login -f, empty-password user).
 login name=mybox_name user=mybox_username:
